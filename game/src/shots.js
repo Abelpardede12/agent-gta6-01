@@ -1,86 +1,87 @@
-// Sunset Keys — screenshot staging: ?shot=drive|foot|chase|mission (+&seed=7).
-// Auto-positions the player / cars / police / beacon and fast-forwards the sim
-// deterministically so screenshots show the right scene. Sets window.__shotsReady.
-import { startMission } from './missions.js';
-import { drawCar } from './player.js';
+// Screenshot staging: ?shot=drive|foot|chase|mission positions the world and
+// fast-forwards the simulation deterministically, then signals readiness.
+// The game itself never depends on this file.
 
-function putPlayerInCar(G, x, y, angle, speed) {
-  // reuse the nearest parked car, teleported onto the road
-  let car = null;
-  for (const c of G.cars) if (c.type === 'parked') { car = c; break; }
-  if (!car) {
-    car = { x, y, angle, speed: 0, color: '#e74c3c', type: 'parked', health: 100, driver: false };
-    G.cars.push(car);
+import { makeCar } from './player.js';
+
+function spawnPoliceBehind(S, n) {
+  const p = S.player;
+  const city = S.city;
+  for (let i = 0; i < n; i++) {
+    const car = makeCar(
+      p.x - Math.cos(p.angle) * (220 + i * 90),
+      p.y - Math.sin(p.angle) * (220 + i * 90) + (i % 2 ? 30 : -30),
+      p.angle, 'police', '#181818',
+    );
+    car.maxSpeed = 560;
+    car.speed = 260;
+    S.cars.push(car);
   }
-  car.x = x; car.y = y; car.angle = angle; car.speed = speed; car.type = 'player'; car.health = 100;
-  const p = G.player;
-  p.car = car; p.onFoot = false; p.x = x; p.y = y; p.angle = angle; p.speed = speed;
+}
+
+function giveCar(S, x, y, angle, speed) {
+  const car = makeCar(x, y, angle, 'player');
+  car.speed = speed;
+  S.cars.push(car);
+  const pl = S.player;
+  pl.car = car;
+  pl.onFoot = false;
+  pl.x = x;
+  pl.y = y;
+  pl.angle = angle;
   return car;
 }
 
-function spawnPoliceNear(G, x, y, n, gap) {
-  for (let i = 0; i < n; i++) {
-    const car = {
-      x: x - gap * (i + 1), y: y + (i % 2 === 0 ? 26 : -26),
-      angle: 0, speed: 300, color: 'police', type: 'police', health: 100, driver: true,
-    };
-    G.cars.push(car);
-    G.police.push(car);
+export function stageShot(S, scene, step) {
+  const city = S.city;
+  const p = S.player;
+  S.hudEls.menu.style.display = 'none';
+  S.state = 'playing';
+  S.audio.setMuted(true);
+  const roadX = city.roadsX[5];
+  const roadY = city.roadsY[4];
+  if (scene === 'foot') {
+    p.x = roadX;
+    p.y = roadY;
+    p.angle = 0;
+    p.onFoot = true;
+    p.car = null;
+    S.wanted = 0;
+  } else if (scene === 'drive') {
+    giveCar(S, roadX - 260, roadY, 0, 320);
+    S.missions.start(S, 0);
+    S.wanted = 2;
+    S.police.lastCrime = S.time;
+    S.police.decayAt = S.time + 999;
+    spawnPoliceBehind(S, 2);
+    S.missions.beacon = { x: roadX + 1000, y: roadY };
+    S.missions.timer = 42;
+  } else if (scene === 'chase') {
+    giveCar(S, roadX, roadY, 0, 420);
+    S.missions.start(S, 2);
+    S.wanted = 3;
+    S.police.lastCrime = S.time;
+    S.police.decayAt = S.time + 999;
+    spawnPoliceBehind(S, 3);
+    S.missions.beacon = { x: roadX + 900, y: roadY - 280 };
+    S.missions.timer = 38;
+  } else {
+    // mission
+    giveCar(S, roadX - 420, roadY, 0, 200);
+    S.missions.start(S, 1);
+    S.wanted = 1;
+    S.police.lastCrime = S.time;
+    S.police.decayAt = S.time + 999;
+    spawnPoliceBehind(S, 1);
+    S.missions.beacon = { x: roadX + 800, y: roadY };
+    S.missions.timer = 47;
   }
+  // Hold the throttle so staged cars keep rolling while the sim settles.
+  S.input.keys.add('KeyW');
+  for (let i = 0; i < 40; i++) step(S, 1 / 30);
+  S.input.keys.delete('KeyW');
+  // Let the renderer paint a couple of frames, then signal the screenshot tool.
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    window.__shotsReady = true;
+  }));
 }
-
-function sim(G, steps, throttle) {
-  G.input.up = throttle;
-  G.input.keys.add('KeyW');
-  for (let i = 0; i < steps; i++) G.step(1 / 60);
-  G.input.keys.delete('KeyW');
-  G.input.up = false;
-}
-
-export function stageShot(G, shot) {
-  const p = G.player;
-  G.state = 'playing';
-  G.hud.hideOverlays();
-  if (shot === 'drive') {
-    putPlayerInCar(G, 660, 440, 0, 320);
-    G.wanted = 2; G.lastCrime = G.time;
-    spawnPoliceNear(G, 660, 440, 2, 130);
-    startMission(G, 0);
-    G.mission.x = 1500; G.mission.y = 440; G.mission.timer = 42; G.mission.total = 42;
-    G.hud.toast('Mission 1/5: reach the beacon in 42s — $150');
-    sim(G, 50, true);
-  } else if (shot === 'foot') {
-    p.x = 660; p.y = 440; p.onFoot = true; p.car = null; p.angle = -Math.PI / 2;
-    // gather pedestrians + traffic around the intersection
-    let pi = 0;
-    for (const ped of G.peds) {
-      if (pi >= 8) break;
-      ped.x = 620 + (pi % 4) * 40; ped.y = 400 + Math.floor(pi / 4) * 70; ped.down = 0;
-      pi++;
-    }
-    let ti = 0;
-    for (const c of G.cars) {
-      if (c.type !== 'traffic' || ti >= 3) continue;
-      c.x = 440 + ti * 130; c.y = 440 + (ti % 2 === 0 ? 14 : -14);
-      c.angle = 0; c.dir = 0; c.speed = 140; c.pause = 0;
-      ti++;
-    }
-    sim(G, 40, false);
-  } else if (shot === 'chase') {
-    putPlayerInCar(G, 880, 660, 0, 470);
-    G.wanted = 3; G.lastCrime = G.time;
-    spawnPoliceNear(G, 880, 660, 3, 110);
-    sim(G, 45, true);
-  } else if (shot === 'mission') {
-    putPlayerInCar(G, 660, 880, 0, 300);
-    G.wanted = 0;
-    startMission(G, 1);
-    G.mission.x = 1320; G.mission.y = 880; G.mission.timer = 38; G.mission.total = 38;
-    G.hud.toast('Mission 2/5: reach the beacon in 38s — $200');
-    sim(G, 40, true);
-  }
-  // one settle render happens in main.js right after this returns
-  window.__shotsReady = true;
-}
-
-export { drawCar };

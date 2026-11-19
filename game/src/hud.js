@@ -1,123 +1,197 @@
-// Sunset Keys — HUD DOM, minimap, toasts, menus.
-import { WORLD_W, WORLD_H, BLOCK } from './city.js';
+// HUD: cash, wanted stars, speed, car health, mission objective + timer,
+// minimap, toasts, and the menu / pause / busted overlays.
 
-export function createHud(G) {
+export function initHud(S) {
   const $ = (id) => document.getElementById(id);
-  const hud = {
-    cash: $('hud-cash'), stars: $('hud-stars'), speed: $('hud-speed'),
-    health: $('hud-health'), healthWrap: $('hud-health-wrap'),
-    mission: $('hud-mission'), timer: $('hud-timer'),
-    minimap: $('minimap'), toastEl: $('toast'),
-    menu: $('menu'), pause: $('pause'), over: $('over'),
-    overTitle: $('over-title'), overText: $('over-text'),
-    _toastT: 0, _last: {},
+  S.hudEls = {
+    cash: $('hud-cash'),
+    stars: $('hud-stars'),
+    speed: $('hud-speed'),
+    health: $('hud-health'),
+    healthWrap: $('hud-health-wrap'),
+    mission: $('hud-mission'),
+    timer: $('hud-timer'),
+    toasts: $('toasts'),
+    menu: $('menu'),
+    pause: $('pause'),
+    busted: $('busted'),
+    bustedCash: $('busted-cash'),
+    minimap: $('minimap'),
+    touch: $('touch-ui'),
+    continueBtn: $('btn-continue'),
+    saveLine: $('save-line'),
   };
-  hud.toast = (msg) => {
-    hud.toastEl.textContent = msg;
-    hud.toastEl.classList.add('show');
-    hud._toastT = 3.2;
+  const mm = S.hudEls.minimap;
+  if (mm) S.minimapCtx = mm.getContext('2d');
+  if (S.input.touchMode && S.hudEls.touch) S.hudEls.touch.style.display = 'block';
+  S.input.attachTouch();
+
+  const start = () => {
+    S.audio.ensure();
+    S.audio.click();
+    S.hudEls.menu.style.display = 'none';
+    S.state = 'playing';
+    if (!S.missions.active && S.missions.cooldown <= 0) S.missions.start(S, 0);
   };
-  hud.showMenu = () => {
-    hud.menu.classList.remove('hidden');
-    hud.pause.classList.add('hidden');
-    hud.over.classList.add('hidden');
-    const cont = $('btn-continue');
-    const hasSave = !!G.saveData;
-    cont.classList.toggle('hidden', !hasSave);
-    $('btn-start').textContent = hasSave ? 'New Game' : 'Start';
-  };
-  hud.showOver = (kind) => {
-    hud.over.classList.remove('hidden');
-    if (kind === 'busted') {
-      hud.overTitle.textContent = 'BUSTED';
-      hud.overText.textContent = 'The Keys PD caught you. You lost half your cash.';
-    } else {
-      hud.overTitle.textContent = 'WASTED';
-      hud.overText.textContent = 'Your ride is scrap. You lost the current mission.';
+  $('btn-start').addEventListener('click', () => {
+    S.cash = 0;
+    S.missionsDone = 0;
+    S.missions.index = 0;
+    S.missions.cooldown = 0;
+    S.missions.active = false;
+    S.save();
+    start();
+  });
+  if (S.hudEls.continueBtn) {
+    S.hudEls.continueBtn.addEventListener('click', start);
+  }
+  $('btn-resume').addEventListener('click', () => {
+    S.audio.click();
+    S.hudEls.pause.style.display = 'none';
+    S.state = 'playing';
+  });
+  $('btn-restart').addEventListener('click', () => {
+    S.audio.click();
+    S.hudEls.busted.style.display = 'none';
+    respawn(S);
+    S.state = 'playing';
+  });
+  $('btn-mute').addEventListener('click', () => {
+    S.audio.ensure();
+    S.audio.setMuted(!S.audio.muted);
+    $('btn-mute').textContent = S.audio.muted ? '🔇 Muted' : '🔊 Sound on';
+  });
+  $('btn-pause-hud').addEventListener('click', () => {
+    if (S.state === 'playing') {
+      S.state = 'paused';
+      S.hudEls.pause.style.display = 'flex';
     }
-  };
-  hud.hideOverlays = () => {
-    hud.menu.classList.add('hidden');
-    hud.pause.classList.add('hidden');
-    hud.over.classList.add('hidden');
-  };
-  hud.update = (dt) => {
-    if (hud._toastT > 0) {
-      hud._toastT -= dt;
-      if (hud._toastT <= 0) hud.toastEl.classList.remove('show');
-    }
-    const set = (el, key, val) => {
-      if (hud._last[key] !== val) { hud._last[key] = val; el.textContent = val; }
-    };
-    set(hud.cash, 'cash', `$${G.cash}`);
-    const stars = '★'.repeat(G.wanted) + '☆'.repeat(5 - G.wanted);
-    set(hud.stars, 'stars', stars);
-    hud.stars.style.color = G.wanted > 0 ? '#ff4757' : '#f5f6fa';
-    const kmh = G.player.onFoot ? 0 : Math.round(Math.abs(G.player.speed) * 0.12);
-    set(hud.speed, 'speed', G.player.onFoot ? 'ON FOOT' : `${kmh} km/h`);
-    if (G.player.onFoot || !G.player.car) {
-      hud.healthWrap.classList.add('hidden');
-    } else {
-      hud.healthWrap.classList.remove('hidden');
-      const hp = Math.max(0, Math.round(G.player.car.health));
-      hud.health.style.width = `${hp}%`;
-      hud.health.style.background = hp > 50 ? '#2ed573' : hp > 25 ? '#ffa502' : '#ff4757';
-    }
-    if (G.mission) {
-      const m = G.mission;
-      set(hud.mission, 'mission', `Mission ${m.idx + 1}/5 — reach the beacon ($${m.reward})`);
-      set(hud.timer, 'timer', `${Math.max(0, Math.ceil(m.timer))}s`);
-      hud.timer.style.color = m.timer < 10 ? '#ff4757' : '#ffd700';
-    } else {
-      set(hud.mission, 'mission', 'Waiting on Vex…');
-      set(hud.timer, 'timer', '');
-    }
-    drawMinimap(hud.minimap, G);
-  };
-  return hud;
+  });
+  // Show Continue only when a save exists.
+  if (S.saveData && S.saveData.cash > 0) {
+    S.hudEls.continueBtn.style.display = 'inline-block';
+    S.hudEls.saveLine.textContent = `Save found: $${S.saveData.cash} cash, ${S.saveData.missionsDone || 0} missions done.`;
+  }
 }
 
-function drawMinimap(canvas, G) {
-  const ctx = canvas.getContext('2d');
-  const W = canvas.width, H = canvas.height;
-  const s = Math.min(W / WORLD_W, H / WORLD_H);
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = 'rgba(20,16,28,0.85)';
+export function respawn(S) {
+  const p = S.player;
+  p.x = S.city.roadsX[1];
+  p.y = S.city.roadsY[1];
+  p.angle = -Math.PI / 2;
+  p.onFoot = true;
+  p.car = null;
+  p.bustTimer = 0;
+  p.boxedTimer = 0;
+  S.wanted = 0;
+  for (const c of S.cars) if (c.kind === 'police') c.kind = 'parked';
+  S.cars = S.cars.filter((c) => c.kind !== 'police');
+  S.missions.resetCurrent(S);
+  S.audio.setSiren(false);
+}
+
+function drawMinimap(S) {
+  const ctx = S.minimapCtx;
+  if (!ctx) return;
+  const city = S.city;
+  const W = 180;
+  const H = 150;
+  const sx = W / city.W;
+  const sy = H / city.H;
+  ctx.fillStyle = 'rgba(20,16,24,0.85)';
   ctx.fillRect(0, 0, W, H);
-  // beach + water
-  ctx.fillStyle = '#d9a05b';
-  ctx.fillRect(0, G.city.beachY * s, W, (2260 - G.city.beachY) * s);
-  ctx.fillStyle = '#2a6f8f';
-  ctx.fillRect(0, 2260 * s, W, H - 2260 * s);
-  // roads
-  ctx.strokeStyle = '#6b6378';
-  ctx.lineWidth = 1;
-  for (let i = 0; i <= 14; i++) {
-    ctx.beginPath(); ctx.moveTo(i * BLOCK * s, 0); ctx.lineTo(i * BLOCK * s, G.city.beachY * s); ctx.stroke();
+  ctx.strokeStyle = '#6a5a6a';
+  ctx.lineWidth = 2;
+  for (const rx of city.roadsX) {
+    ctx.beginPath();
+    ctx.moveTo(rx * sx, 0);
+    ctx.lineTo(rx * sx, H);
+    ctx.stroke();
   }
-  for (let j = 0; j < 9; j++) {
-    ctx.beginPath(); ctx.moveTo(0, j * BLOCK * s); ctx.lineTo(W, j * BLOCK * s); ctx.stroke();
+  for (const ry of city.roadsY) {
+    ctx.beginPath();
+    ctx.moveTo(0, ry * sy);
+    ctx.lineTo(W, ry * sy);
+    ctx.stroke();
   }
-  // buildings
-  ctx.fillStyle = 'rgba(200,150,120,0.6)';
-  for (const b of G.city.buildings) ctx.fillRect(b.x * s, b.y * s, Math.max(1, b.w * s), Math.max(1, b.h * s));
-  // beacon
-  if (G.mission) {
-    const m = G.mission;
-    ctx.fillStyle = '#ffd700';
-    ctx.beginPath(); ctx.arc(m.x * s, m.y * s, 4, 0, Math.PI * 2); ctx.fill();
-    ctx.strokeStyle = 'rgba(255,215,0,0.6)';
-    ctx.beginPath(); ctx.arc(m.x * s, m.y * s, 7, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = '#2a6a8a';
+  ctx.fillRect(0, city.beachY * sy, W, H - city.beachY * sy);
+  const m = S.missions;
+  if (m.active && m.beacon) {
+    ctx.fillStyle = '#ffd94a';
+    ctx.beginPath();
+    ctx.arc(m.beacon.x * sx, m.beacon.y * sy, 4, 0, Math.PI * 2);
+    ctx.fill();
   }
-  // police
-  ctx.fillStyle = '#ff4757';
-  for (const c of G.police) { ctx.beginPath(); ctx.arc(c.x * s, c.y * s, 3, 0, Math.PI * 2); ctx.fill(); }
-  // player arrow
-  const p = G.player;
+  for (const c of S.cars) {
+    if (c.kind === 'police') {
+      ctx.fillStyle = '#ff2a2a';
+      ctx.beginPath();
+      ctx.arc(c.x * sx, c.y * sy, 3, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  const p = S.player;
   ctx.save();
-  ctx.translate(p.x * s, p.y * s);
+  ctx.translate(p.x * sx, p.y * sy);
   ctx.rotate(p.angle);
-  ctx.fillStyle = '#fff';
-  ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(-4, -4); ctx.lineTo(-4, 4); ctx.closePath(); ctx.fill();
+  ctx.fillStyle = '#ffffff';
+  ctx.beginPath();
+  ctx.moveTo(6, 0);
+  ctx.lineTo(-4, -4);
+  ctx.lineTo(-4, 4);
+  ctx.closePath();
+  ctx.fill();
   ctx.restore();
+}
+
+export function updateHud(S) {
+  const el = S.hudEls;
+  if (!el) return;
+  el.cash.textContent = `$${S.cash}`;
+  let stars = '';
+  for (let i = 0; i < 5; i++) stars += i < S.wanted ? '★' : '☆';
+  el.stars.textContent = stars;
+  el.stars.style.color = S.wanted > 0 ? '#ffd94a' : '#ffffff';
+  const p = S.player;
+  if (p.onFoot) {
+    el.speed.textContent = 'On foot';
+    el.healthWrap.style.display = 'none';
+  } else {
+    const mph = Math.round(Math.abs(p.car.speed) * 0.12);
+    el.speed.textContent = `${mph} mph`;
+    el.healthWrap.style.display = 'block';
+    el.health.style.width = `${Math.max(0, p.car.health)}%`;
+    el.health.style.background = p.car.health > 50 ? '#7dd94a' : p.car.health > 25 ? '#e8c33a' : '#d94a4a';
+  }
+  const m = S.missions;
+  if (m.active) {
+    el.mission.textContent = `Mission ${m.index + 1}/5 — reach the gold beacon (+$${m.reward})`;
+    el.timer.textContent = `${Math.max(0, Math.ceil(m.timer))}s`;
+    el.timer.style.color = m.timer < 10 ? '#ff5a3c' : '#ffffff';
+  } else {
+    el.mission.textContent = m.cooldown > 0 ? 'Vex is lining up the next job…' : 'No active mission';
+    el.timer.textContent = '';
+  }
+  drawMinimap(S);
+}
+
+export function toast(S, msg) {
+  const box = S.hudEls ? S.hudEls.toasts : document.getElementById('toasts');
+  if (!box) return;
+  const div = document.createElement('div');
+  div.className = 'toast';
+  div.textContent = msg;
+  box.appendChild(div);
+  while (box.children.length > 4) box.removeChild(box.firstChild);
+  setTimeout(() => {
+    if (div.parentNode) div.parentNode.removeChild(div);
+  }, 6000);
+}
+
+export function showBusted(S) {
+  const el = S.hudEls;
+  if (!el) return;
+  el.bustedCash.textContent = `The cops took half your cash. You kept $${S.cash}.`;
+  el.busted.style.display = 'flex';
 }

@@ -1,89 +1,155 @@
-// Sunset Keys — wanted stars, police spawn/chase, busted logic.
-import { roadPointNear, collideBuildings } from './city.js';
-import { gameOver } from './player.js';
+// Wanted stars and the police who answer them: cruisers spawn, chase, ram,
+// and bust the player when they catch him.
 
-export function updatePolice(G, dt) {
-  const p = G.player;
-  // decay: no crime for 12s and no police nearby -> lose a star every 6s
-  if (G.wanted > 0 && G.time - G.lastCrime > 12) {
-    let near = false;
-    for (const c of G.police) {
-      if (Math.hypot(c.x - p.x, c.y - p.y) < 500) { near = true; break; }
-    }
-    if (!near) {
-      G.decayT = (G.decayT || 0) + dt;
-      if (G.decayT >= 6) { G.decayT = 0; G.wanted = Math.max(0, G.wanted - 1); }
-    } else G.decayT = 0;
-  } else G.decayT = 0;
-  if (G.disguiseCd > 0) G.disguiseCd -= dt;
+import { makeCar } from './player.js';
+import { nearestRoad, resolveCircle } from './city.js';
 
-  // spawn up to 1 + stars cruisers
-  const want = G.wanted > 0 ? Math.min(1 + G.wanted, 4) : 0;
-  while (G.police.length < want) {
-    const spot = roadPointNear(G.rng, p.x, p.y, 520, 900);
-    const car = {
-      x: spot.x, y: spot.y, angle: 0, speed: 0,
-      color: 'police', type: 'police', health: 100, driver: true,
-    };
-    G.cars.push(car);
-    G.police.push(car);
-  }
-  // despawn when clean
-  if (G.wanted === 0 && G.police.length > 0) {
-    for (const c of G.police) G.cars.splice(G.cars.indexOf(c), 1);
-    G.police.length = 0;
-  }
-
-  // chase
-  let touchingFoot = false;
-  let boxing = 0;
-  for (const c of G.police) {
-    const dx = p.x - c.x, dy = p.y - c.y;
-    const d = Math.hypot(dx, dy) || 1;
-    const target = Math.atan2(dy, dx);
-    let diff = target - c.angle;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    c.angle += Math.max(-2.8 * dt, Math.min(2.8 * dt, diff));
-    const wantSpeed = d > 260 ? 545 : 470;
-    c.speed += (wantSpeed - c.speed) * Math.min(1, dt * 1.5);
-    c.x += Math.cos(c.angle) * c.speed * dt;
-    c.y += Math.sin(c.angle) * c.speed * dt;
-    collideBuildings(G.city, c, 16);
-    // ram the player's car
-    if (!p.onFoot && p.car) {
-      const cd = Math.hypot(c.x - p.car.x, c.y - p.car.y);
-      if (cd < 36) {
-        p.car.health -= 9 * dt;
-        p.car.speed *= (1 - 0.6 * dt);
-        c.speed *= 0.92;
-        if (Math.abs(c.speed) > 200) G.audio.thud();
-        if (p.car.health <= 0) {
-          G.cars.splice(G.cars.indexOf(p.car), 1);
-          p.car = null; p.onFoot = true; p.speed = 0;
-          G.mission = null;
-          gameOver(G, 'wasted');
-          return;
-        }
-      }
-      if (cd < 70 && Math.abs(p.car.speed) < 30) boxing++;
-    } else if (p.onFoot) {
-      if (d < 30) touchingFoot = true;
-    }
-  }
-  // busted: cop touches player on foot ~1.2s cumulative
-  if (touchingFoot) {
-    G.bustedHold = (G.bustedHold || 0) + dt;
-    if (G.bustedHold >= 1.2) { gameOver(G, 'busted'); return; }
-  } else G.bustedHold = Math.max(0, (G.bustedHold || 0) - dt * 2);
-  // busted: boxed in at low speed for 3s
-  if (!p.onFoot && boxing >= 2) {
-    G.boxedT = (G.boxedT || 0) + dt;
-    if (G.boxedT >= 3) { gameOver(G, 'busted'); return; }
-  } else G.boxedT = 0;
+export function createPolice() {
+  return {
+    lastCrime: -999,
+    decayAt: 0,
+    bustFlash: 0,
+  };
 }
 
-export function drawPolice(ctx, G, t) {
-  // light glow above police cars is drawn with the car itself in player.js
-  void ctx; void G; void t;
+export function crime(S, n) {
+  S.wanted = Math.min(5, S.wanted + n);
+  S.police.lastCrime = S.time;
+  S.police.decayAt = S.time + 12;
+}
+
+function spawnCruiser(S) {
+  const city = S.city;
+  const p = S.player;
+  // Spawn on a road just out of view, near the player.
+  const vertical = Math.random() < 0.5;
+  const road = vertical
+    ? nearestRoad(city, 'x', p.x + (Math.random() < 0.5 ? -700 : 700))
+    : nearestRoad(city, 'y', p.y + (Math.random() < 0.5 ? -700 : 700));
+  const car = makeCar(
+    vertical ? road : Math.max(80, Math.min(city.W - 80, p.x + (Math.random() - 0.5) * 900)),
+    vertical ? Math.max(80, Math.min(city.H - 320, p.y + (Math.random() - 0.5) * 900)) : road,
+    0, 'police', '#181818',
+  );
+  car.maxSpeed = 560;
+  car.speed = 200;
+  S.cars.push(car);
+  S.audio.setSiren(true);
+}
+
+function policeCount(S) {
+  let n = 0;
+  for (const c of S.cars) if (c.kind === 'police') n++;
+  return n;
+}
+
+export function busted(S) {
+  S.state = 'busted';
+  S.cash = Math.floor(S.cash / 2);
+  S.save();
+  S.audio.setSiren(false);
+  S.audio.setEngine(0, false);
+  S.hud.showBusted();
+}
+
+export function wasted(S) {
+  const p = S.player;
+  const car = p.car;
+  S.fx.push({ x: car.x, y: car.y, vx: 0, vy: 0, life: 0.8, color: '#ff7a2a', size: 60 });
+  S.fx.push({ x: car.x, y: car.y, vx: 0, vy: 0, life: 0.6, color: '#ffd94a', size: 40 });
+  S.cars.splice(S.cars.indexOf(car), 1);
+  p.car = null;
+  p.onFoot = true;
+  p.x = car.x + 40;
+  p.y = car.y + 40;
+  p.angle = 0;
+  S.missions.resetCurrent(S);
+  S.audio.thud();
+  S.hud.toast('WASTED — your ride is scrap. Mission progress lost.');
+}
+
+export function updatePolice(S, dt) {
+  const p = S.player;
+  // Spawn up to 1 + stars cruisers.
+  if (S.wanted >= 1 && policeCount(S) < 1 + S.wanted) {
+    if (Math.random() < dt * 1.2) spawnCruiser(S);
+  }
+  // Wanted decays after 12 quiet seconds with no cruiser in view.
+  if (S.wanted > 0 && S.time > S.police.decayAt) {
+    let near = false;
+    for (const c of S.cars) {
+      if (c.kind === 'police' && Math.hypot(c.x - p.x, c.y - p.y) < 420) {
+        near = true;
+        break;
+      }
+    }
+    if (!near) {
+      S.wanted -= 1;
+      S.police.decayAt = S.time + 4;
+      if (S.wanted === 0) S.hud.toast('You lost them. Wanted clear.');
+    }
+  }
+  if (policeCount(S) === 0) S.audio.setSiren(false);
+
+  let touching = false;
+  let boxing = false;
+  for (const car of S.cars) {
+    if (car.kind !== 'police') continue;
+    // Chase: steer toward the player, faster than his top speed.
+    const tx = p.x - car.x;
+    const ty = p.y - car.y;
+    const dist = Math.max(1, Math.hypot(tx, ty));
+    const want = Math.atan2(ty, tx);
+    let diff = want - car.angle;
+    while (diff > Math.PI) diff -= Math.PI * 2;
+    while (diff < -Math.PI) diff += Math.PI * 2;
+    car.angle += Math.max(-2.8 * dt, Math.min(2.8 * dt, diff));
+    car.speed = Math.min(car.maxSpeed, car.speed + 380 * dt);
+    car.x += Math.cos(car.angle) * car.speed * dt;
+    car.y += Math.sin(car.angle) * car.speed * dt;
+    if (resolveCircle(S.city, car, 20)) car.speed *= 0.5;
+    // Ram the player's car.
+    if (!p.onFoot && p.car) {
+      const d = Math.hypot(car.x - p.car.x, car.y - p.car.y);
+      if (d < 38) {
+        const push = (38 - d) / 2;
+        const nx = (p.car.x - car.x) / Math.max(1, d);
+        const ny = (p.car.y - car.y) / Math.max(1, d);
+        p.car.x += nx * push;
+        p.car.y += ny * push;
+        p.car.speed *= 0.92;
+        if (Math.abs(car.speed) > 260 && Math.random() < dt * 2.5) {
+          p.car.health -= 1;
+          S.audio.thud();
+          S.fx.push({ x: p.car.x, y: p.car.y, vx: 0, vy: 0, life: 0.3, color: '#ffd94a', size: 12 });
+        }
+        if (Math.abs(p.car.speed) < 40) boxing = true;
+      }
+    } else if (dist < 34) {
+      touching = true;
+    }
+  }
+  // Busted: a cruiser holds the player on foot, or boxes his car in.
+  if (S.state !== 'playing') return;
+  if (p.onFoot && touching) {
+    p.bustTimer += dt;
+    S.police.bustFlash = S.time;
+    if (p.bustTimer >= 1.2) {
+      S.hud.toast('BUSTED!');
+      busted(S);
+      return;
+    }
+  } else {
+    p.bustTimer = Math.max(0, p.bustTimer - dt * 2);
+  }
+  if (!p.onFoot && boxing) {
+    p.boxedTimer += dt;
+    if (p.boxedTimer >= 3) {
+      S.hud.toast('BUSTED — boxed in!');
+      busted(S);
+      return;
+    }
+  } else {
+    p.boxedTimer = Math.max(0, p.boxedTimer - dt * 2);
+  }
 }

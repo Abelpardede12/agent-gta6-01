@@ -1,87 +1,114 @@
-// Sunset Keys — keyboard + touch input.
-export function createInput() {
-  const input = {
-    keys: new Set(),
-    pressed: new Set(),
-    joy: { x: 0, y: 0, active: false },
-    btnE: false, btnBrake: false,
-    touch: false,
-    up: false, down: false, left: false, right: false,
-    handbrake: false,
-  };
-  window.addEventListener('keydown', (e) => {
-    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
-    if (!e.repeat) input.pressed.add(e.code);
-    input.keys.add(e.code);
-  });
-  window.addEventListener('keyup', (e) => input.keys.delete(e.code));
-  window.addEventListener('blur', () => { input.keys.clear(); input.joy.active = false; });
+// Keyboard + touch input for Sunset Keys.
+// Tracks held keys, edge-triggered presses, and a virtual joystick for touch devices.
 
-  // touch controls: virtual joystick (left) + action buttons (right)
-  const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
-  input.touch = isTouch;
-  if (isTouch) {
-    const zone = document.createElement('div');
-    zone.id = 'touch-ui';
-    zone.innerHTML = `
-      <div id="joy"><div id="joy-knob"></div></div>
-      <div id="touch-btns">
-        <button id="btn-e" type="button">E</button>
-        <button id="btn-brake" type="button">BRK</button>
-        <button id="btn-pause" type="button">II</button>
-      </div>`;
-    document.body.appendChild(zone);
-    const joy = zone.querySelector('#joy');
-    const knob = zone.querySelector('#joy-knob');
-    const setJoy = (cx, cy) => {
-      const r = joy.getBoundingClientRect();
-      let dx = (cx - (r.left + r.width / 2)) / (r.width / 2);
-      let dy = (cy - (r.top + r.height / 2)) / (r.height / 2);
+export class Input {
+  constructor() {
+    this.keys = new Set();
+    this.pressed = new Set();
+    this.joy = { active: false, x: 0, y: 0 };
+    this.brakeHeld = false;
+    this.touchMode = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    window.addEventListener('keydown', (e) => {
+      if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+      if (!e.repeat) this.pressed.add(e.code);
+      this.keys.add(e.code);
+    });
+    window.addEventListener('keyup', (e) => this.keys.delete(e.code));
+    window.addEventListener('blur', () => this.keys.clear());
+  }
+
+  // True once for the frame the key went down; call after handling.
+  consume(code) {
+    if (this.pressed.has(code)) {
+      this.pressed.delete(code);
+      return true;
+    }
+    return false;
+  }
+
+  endFrame() {
+    this.pressed.clear();
+  }
+
+  get up() { return this.keys.has('KeyW') || this.keys.has('ArrowUp') || this.joy.y < -0.3; }
+  get down() { return this.keys.has('KeyS') || this.keys.has('ArrowDown') || this.joy.y > 0.3; }
+  get left() { return this.keys.has('KeyA') || this.keys.has('ArrowLeft') || this.joy.x < -0.3; }
+  get right() { return this.keys.has('KeyD') || this.keys.has('ArrowRight') || this.joy.x > 0.3; }
+  get handbrake() { return this.keys.has('Space') || this.brakeHeld; }
+
+  // Normalised 2D move vector from keys or joystick.
+  moveVector() {
+    let x = 0;
+    let y = 0;
+    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) x -= 1;
+    if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) x += 1;
+    if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) y -= 1;
+    if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) y += 1;
+    if (this.joy.active) {
+      x += this.joy.x;
+      y += this.joy.y;
+    }
+    const len = Math.hypot(x, y);
+    if (len > 1) {
+      x /= len;
+      y /= len;
+    }
+    return { x, y };
+  }
+
+  // Wire the touch DOM (joystick + buttons). Called once by the HUD setup.
+  attachTouch() {
+    const base = document.getElementById('joy-base');
+    const knob = document.getElementById('joy-knob');
+    if (!base || !knob) return;
+    let joyId = null;
+    const setJoy = (e) => {
+      const r = base.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      let dx = (e.clientX - cx) / (r.width / 2);
+      let dy = (e.clientY - cy) / (r.height / 2);
       const len = Math.hypot(dx, dy);
-      if (len > 1) { dx /= len; dy /= len; }
-      input.joy.x = dx; input.joy.y = dy; input.joy.active = true;
+      if (len > 1) {
+        dx /= len;
+        dy /= len;
+      }
+      this.joy.x = dx;
+      this.joy.y = dy;
+      this.joy.active = true;
       knob.style.transform = `translate(${dx * 34}px, ${dy * 34}px)`;
     };
-    const clearJoy = () => { input.joy.x = 0; input.joy.y = 0; input.joy.active = false; knob.style.transform = 'translate(0,0)'; };
-    joy.addEventListener('pointerdown', (e) => { joy.setPointerCapture(e.pointerId); setJoy(e.clientX, e.clientY); });
-    joy.addEventListener('pointermove', (e) => { if (input.joy.active) setJoy(e.clientX, e.clientY); });
-    joy.addEventListener('pointerup', clearJoy);
-    joy.addEventListener('pointercancel', clearJoy);
-    const hold = (id, on, off) => {
-      const el = zone.querySelector(id);
-      el.addEventListener('pointerdown', (e) => { e.preventDefault(); on(); });
+    const endJoy = () => {
+      joyId = null;
+      this.joy.x = 0;
+      this.joy.y = 0;
+      this.joy.active = false;
+      knob.style.transform = 'translate(0px, 0px)';
+    };
+    base.addEventListener('pointerdown', (e) => {
+      joyId = e.pointerId;
+      base.setPointerCapture(e.pointerId);
+      setJoy(e);
+    });
+    base.addEventListener('pointermove', (e) => {
+      if (e.pointerId === joyId) setJoy(e);
+    });
+    base.addEventListener('pointerup', endJoy);
+    base.addEventListener('pointercancel', endJoy);
+
+    const bindHold = (id, on, off) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.addEventListener('pointerdown', (e) => {
+        e.preventDefault();
+        on();
+      });
       el.addEventListener('pointerup', off);
       el.addEventListener('pointercancel', off);
       el.addEventListener('pointerleave', off);
     };
-    hold('#btn-e', () => { input.btnE = true; input.pressed.add('KeyE'); }, () => { input.btnE = false; });
-    hold('#btn-brake', () => { input.btnBrake = true; }, () => { input.btnBrake = false; });
-    zone.querySelector('#btn-pause').addEventListener('click', () => input.pressed.add('KeyP'));
+    bindHold('btn-enter', () => this.pressed.add('KeyE'), () => {});
+    bindHold('btn-brake', () => { this.brakeHeld = true; }, () => { this.brakeHeld = false; });
+    bindHold('btn-pause', () => this.pressed.add('KeyP'), () => {});
   }
-  return input;
 }
-
-// Recompute directional state from keys / joystick. Call once per frame.
-export function pollInput(input) {
-  const k = input.keys;
-  const jx = input.joy.active ? input.joy.x : 0;
-  const jy = input.joy.active ? input.joy.y : 0;
-  input.up = k.has('KeyW') || k.has('ArrowUp') || jy < -0.35;
-  input.down = k.has('KeyS') || k.has('ArrowDown') || jy > 0.35;
-  input.left = k.has('KeyA') || k.has('ArrowLeft') || jx < -0.35;
-  input.right = k.has('KeyD') || k.has('ArrowRight') || jx > 0.35;
-  input.handbrake = k.has('Space') || input.btnBrake;
-  // expose analog steer for driving
-  input.steer = (input.right ? 1 : 0) - (input.left ? 1 : 0) + (input.joy.active ? jx : 0);
-  input.throttle = (input.up ? 1 : 0) - (input.down ? 1 : 0) + (input.joy.active ? -jy : 0);
-  input.steer = Math.max(-1, Math.min(1, input.steer));
-  input.throttle = Math.max(-1, Math.min(1, input.throttle));
-}
-
-// Edge-triggered key: true once per physical press.
-export function wasPressed(input, code) {
-  if (input.pressed.has(code)) { input.pressed.delete(code); return true; }
-  return false;
-}
-
-export function endFrameInput(input) { input.pressed.clear(); }

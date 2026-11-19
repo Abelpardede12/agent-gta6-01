@@ -1,245 +1,235 @@
-// Sunset Keys — player on foot + driving, enter/exit cars, collisions.
-import { collideBuildings, WORLD_W, WORLD_H } from './city.js';
+// The player: on foot (walk) and behind the wheel (arcade driving).
+// Cars are plain objects in S.cars; the one the player drives has kind 'player'.
 
-export const WALK_SPEED = 170;
-export const CAR_TOP_SPEED = 520;
-export const CAR_ACCEL = 520;
-export const CAR_REVERSE_MAX = 190;
+import { resolveCircle } from './city.js';
 
-export function createPlayer(spawn) {
+const CAR_COLORS = ['#d94a4a', '#4a7dd9', '#e8c33a', '#7dd94a', '#e8e8e8', '#d97dd9', '#3ad9c9', '#e87d2a'];
+
+export function makeCar(x, y, angle, kind, color) {
   return {
-    x: spawn.x, y: spawn.y, angle: -Math.PI / 2, speed: 0,
-    onFoot: true, car: null, lastCar: null, walkAngle: -Math.PI / 2,
+    x, y, angle, speed: 0, kind,
+    color: color || CAR_COLORS[Math.floor(Math.random() * CAR_COLORS.length)],
+    driver: kind === 'traffic',
+    health: 100, maxSpeed: 520,
   };
 }
 
-const CAR_COLORS = ['#e74c3c', '#3498db', '#f1c40f', '#2ecc71', '#9b59b6', '#e67e22', '#1abc9c', '#ecf0f1', '#fd79a8', '#00cec9'];
-
-export function spawnParkedCars(G, rng, n) {
-  for (let i = 0; i < n; i++) {
-    const vertical = rng() < 0.5;
-    const line = Math.floor(rng() * 14) * 220;
-    const along = 60 + rng() * 1900;
-    const off = (rng() < 0.5 ? -1 : 1) * 20;
-    G.cars.push({
-      x: vertical ? line + off : along,
-      y: vertical ? along : line + off,
-      angle: vertical ? (off > 0 ? Math.PI / 2 : -Math.PI / 2) : (off > 0 ? 0 : Math.PI),
-      speed: 0, color: CAR_COLORS[Math.floor(rng() * CAR_COLORS.length)],
-      type: 'parked', health: 100, driver: false,
-    });
-  }
+export function createPlayer(city) {
+  return {
+    x: city.roadsX[1], y: city.roadsY[1], angle: -Math.PI / 2,
+    onFoot: true, car: null, walkSpeed: 170,
+    bustTimer: 0, boxedTimer: 0, disguiseAt: -999,
+  };
 }
 
-export function nearestCar(G, x, y, maxD) {
-  let best = null, bd = maxD;
-  for (const c of G.cars) {
-    const d = Math.hypot(c.x - x, c.y - y);
-    if (d < bd) { bd = d; best = c; }
+function nearestCar(S, maxDist) {
+  let best = null;
+  let bd = maxDist;
+  for (const c of S.cars) {
+    if (c === S.player.car) continue;
+    const d = Math.hypot(c.x - S.player.x, c.y - S.player.y);
+    if (d < bd) {
+      bd = d;
+      best = c;
+    }
   }
   return best;
 }
 
-export function tryEnterExit(G) {
-  const p = G.player;
+export function tryEnterExit(S) {
+  const p = S.player;
   if (p.onFoot) {
-    const car = nearestCar(G, p.x, p.y, 70);
-    if (!car) return false;
-    if (car.type === 'traffic' && car.driver) {
-      // carjack: eject the driver, they flee on foot
-      G.peds.push({ x: car.x + 24, y: car.y, angle: 0, speed: 0, flee: 2.5, color: '#ffd32a', down: 0 });
-      car.driver = false;
-      addWanted(G, 1);
-      G.hud.toast('You jacked a car! Wanted +1');
-    } else if (car.type === 'police') {
-      addWanted(G, 2);
-      G.hud.toast('You stole a cop car! Wanted +2');
+    const car = nearestCar(S, 70);
+    if (!car) {
+      S.hud.toast('No car nearby — walk to a parked car or traffic.');
+      return;
     }
-    car.type = 'player';
+    if (car.kind === 'traffic' && car.driver) {
+      // Carjack: the driver bails and runs, the law notices.
+      car.driver = false;
+      S.peds.push({
+        x: car.x + 26, y: car.y + 10, tx: car.x + 300, ty: car.y + 200,
+        speed: 150, state: 'flee', timer: 2.5, color: '#e8d27d', down: 0,
+      });
+      S.police.crime(S, 1);
+      S.hud.toast('Carjacked! The driver ran — the cops noticed.');
+      S.audio.chime();
+    } else if (car.kind === 'parked') {
+      S.police.crime(S, 1);
+      S.hud.toast('Hot-wired the car. Wanted +1.');
+    }
+    car.kind = 'player';
     p.car = car;
     p.onFoot = false;
-    p.x = car.x; p.y = car.y; p.angle = car.angle;
-    // disguise: entering a different car drops a star (20s cooldown)
-    if (G.lastCar && G.lastCar !== car && G.wanted > 0 && G.disguiseCd <= 0) {
-      G.wanted = Math.max(0, G.wanted - 1);
-      G.disguiseCd = 20;
-      G.hud.toast('New wheels, less heat. Wanted -1');
-    }
-    return true;
-  }
-  // exit
-  const car = p.car;
-  car.type = 'parked';
-  car.speed = 0;
-  G.lastCar = car;
-  const px = car.x + Math.cos(car.angle + Math.PI / 2) * 26;
-  const py = car.y + Math.sin(car.angle + Math.PI / 2) * 26;
-  p.x = px; p.y = py; p.car = null; p.onFoot = true; p.speed = 0;
-  return true;
-}
-
-export function addWanted(G, n) {
-  G.wanted = Math.min(5, G.wanted + n);
-  G.lastCrime = G.time;
-}
-
-function updateOnFoot(G, dt) {
-  const p = G.player, inp = G.input;
-  let mx = 0, my = 0;
-  if (inp.up) my -= 1;
-  if (inp.down) my += 1;
-  if (inp.left) mx -= 1;
-  if (inp.right) mx += 1;
-  if (inp.joy.active) { mx = inp.joy.x; my = inp.joy.y; }
-  const len = Math.hypot(mx, my);
-  if (len > 0.01) {
-    mx /= Math.max(1, len); my /= Math.max(1, len);
-    p.x += mx * WALK_SPEED * dt;
-    p.y += my * WALK_SPEED * dt;
-    p.walkAngle = Math.atan2(my, mx);
-    p.angle = p.walkAngle;
-  }
-  p.x = Math.max(14, Math.min(WORLD_W - 14, p.x));
-  p.y = Math.max(14, Math.min(WORLD_H - 14, p.y));
-  collideBuildings(G.city, p, 13);
-}
-
-function updateDriving(G, dt) {
-  const p = G.player, car = p.car, inp = G.input;
-  const fwd = { x: Math.cos(car.angle), y: Math.sin(car.angle) };
-  const speed = car.speed;
-  // throttle
-  if (inp.throttle > 0) car.speed += CAR_ACCEL * inp.throttle * dt;
-  else if (inp.throttle < 0) {
-    if (speed > 20) car.speed -= CAR_ACCEL * 0.9 * dt; // brake
-    else car.speed += CAR_ACCEL * 0.45 * inp.throttle * dt; // reverse
+    p.x = car.x;
+    p.y = car.y;
+    p.angle = car.angle;
+    car.health = Math.max(car.health, 40);
+    S.audio.click();
   } else {
-    car.speed -= Math.sign(car.speed) * Math.min(Math.abs(car.speed), 240 * dt); // drag
-  }
-  if (inp.handbrake) car.speed -= Math.sign(car.speed) * Math.min(Math.abs(car.speed), 700 * dt);
-  car.speed = Math.max(-CAR_REVERSE_MAX, Math.min(CAR_TOP_SPEED, car.speed));
-  // steering, speed-sensitive
-  const steerAuthority = Math.min(1, Math.abs(car.speed) / 140) * (car.speed < 0 ? -1 : 1);
-  car.angle += inp.steer * 2.6 * steerAuthority * dt * (inp.handbrake ? 1.5 : 1);
-  car.x += Math.cos(car.angle) * car.speed * dt;
-  car.y += Math.sin(car.angle) * car.speed * dt;
-  car.x = Math.max(20, Math.min(WORLD_W - 20, car.x));
-  car.y = Math.max(20, Math.min(WORLD_H - 20, car.y));
-  if (collideBuildings(G.city, car, 16)) {
-    if (Math.abs(car.speed) > 200) {
-      car.health -= 6;
-      G.audio.thud();
-      G.hud.toast('Crash! Car damaged');
+    const car = p.car;
+    car.kind = 'parked';
+    car.speed = 0;
+    p.onFoot = true;
+    p.car = null;
+    p.x = car.x + Math.cos(car.angle + Math.PI / 2) * 34;
+    p.y = car.y + Math.sin(car.angle + Math.PI / 2) * 34;
+    p.angle = car.angle;
+    // A fresh ride is a disguise: drop a star, once per 20s.
+    if (S.time - p.disguiseAt > 20 && S.wanted > 0) {
+      S.wanted -= 1;
+      p.disguiseAt = S.time;
+      S.hud.toast('New ride, new look — wanted down a star.');
     }
-    car.speed *= 0.4;
   }
-  p.x = car.x; p.y = car.y; p.angle = car.angle; p.speed = car.speed;
-  // hit pedestrians?
-  if (Math.abs(car.speed) > 110) {
-    for (const ped of G.peds) {
-      if (ped.down > 0) continue;
-      if (Math.hypot(ped.x - car.x, ped.y - car.y) < 22) {
-        ped.down = 2.2; ped.flee = 3;
-        addWanted(G, 1);
-        G.audio.thud();
-        G.hud.toast('You hit a pedestrian! Wanted +1');
+}
+
+function collideCars(S, car, dt) {
+  for (const o of S.cars) {
+    if (o === car) continue;
+    const dx = car.x - o.x;
+    const dy = car.y - o.y;
+    const d = Math.hypot(dx, dy);
+    const min = 36;
+    if (d >= min || d < 0.001) continue;
+    const push = (min - d) / 2;
+    const nx = dx / d;
+    const ny = dy / d;
+    car.x += nx * push;
+    car.y += ny * push;
+    if (o.kind === 'traffic' || o.kind === 'parked') {
+      o.x -= nx * push;
+      o.y -= ny * push;
+    }
+    const impact = Math.abs(car.speed) + Math.abs(o.speed || 0);
+    if (impact > 140) {
+      car.speed *= 0.55;
+      if (o.kind === 'traffic') o.speed *= 0.4;
+      if (car.health > 0 && impact > 260) {
+        car.health -= Math.round((impact - 260) / 12);
+        S.audio.thud();
+        S.fx.push({ x: car.x, y: car.y, vx: 0, vy: 0, life: 0.4, color: '#ffd94a', size: 14 });
+      }
+      if (o.kind === 'police' && S.time - (S.lastRamCrime || -999) > 3) {
+        S.lastRamCrime = S.time;
+        S.police.crime(S, 1);
+        S.hud.toast('You rammed a cop car! Wanted +1.');
       }
     }
   }
-  // wasted?
-  if (car.health <= 0) {
-    G.cars.splice(G.cars.indexOf(car), 1);
-    p.car = null; p.onFoot = true; p.speed = 0;
-    p.x = car.x; p.y = car.y;
-    G.mission = null;
-    G.audio.thud();
-    gameOver(G, 'wasted');
+}
+
+export function updatePlayer(S, dt) {
+  const p = S.player;
+  const input = S.input;
+  if (p.onFoot) {
+    const mv = input.moveVector();
+    p.x += mv.x * p.walkSpeed * dt;
+    p.y += mv.y * p.walkSpeed * dt;
+    if (mv.x !== 0 || mv.y !== 0) p.angle = Math.atan2(mv.y, mv.x);
+    resolveCircle(S.city, p, 14);
+    return;
   }
-}
-
-export function updatePlayer(G, dt) {
-  if (G.player.onFoot) updateOnFoot(G, dt);
-  else updateDriving(G, dt);
-}
-
-export function gameOver(G, kind) {
-  G.state = kind; // 'busted' | 'wasted'
-  G.over = { kind, at: G.time };
-  if (kind === 'busted') {
-    G.cash = Math.floor(G.cash / 2);
-    G.wanted = 0;
-    G.police.length = 0;
-    G.cars = G.cars.filter((c) => c.type !== 'police');
-    const p = G.player;
-    if (p.car) { p.car.type = 'parked'; p.car.speed = 0; }
-    p.x = G.spawn.x; p.y = G.spawn.y; p.onFoot = true; p.car = null; p.speed = 0;
-    G.bustedHold = 0; G.boxedT = 0;
+  const car = p.car;
+  const spd = car.speed;
+  const dir = spd >= 0 ? 1 : -1;
+  // Steering is speed-sensitive: twitchy at low speed, steady at high speed.
+  const steerInput = (input.left ? -1 : 0) + (input.right ? 1 : 0);
+  const steerRate = 2.6 - Math.min(1.5, Math.abs(spd) / 520 * 1.5);
+  car.angle += steerInput * steerRate * dir * dt * (input.handbrake ? 1.5 : 1);
+  if (input.up) car.speed += 430 * dt;
+  if (input.down) car.speed -= spd > 20 ? 620 * dt : 260 * dt;
+  if (!input.up && !input.down) car.speed -= car.speed * 0.7 * dt;
+  if (input.handbrake) car.speed -= car.speed * 3.2 * dt;
+  car.speed = Math.max(-170, Math.min(car.maxSpeed, car.speed));
+  if (Math.abs(car.speed) < 4 && !input.up && !input.down) car.speed = 0;
+  const ox = car.x;
+  const oy = car.y;
+  car.x += Math.cos(car.angle) * car.speed * dt;
+  car.y += Math.sin(car.angle) * car.speed * dt;
+  if (resolveCircle(S.city, car, 20)) {
+    // Scraped a building: lose speed, take damage on hard hits.
+    if (Math.abs(car.speed) > 240) {
+      car.health -= Math.round((Math.abs(car.speed) - 240) / 18);
+      S.audio.thud();
+      S.fx.push({ x: car.x, y: car.y, vx: 0, vy: 0, life: 0.4, color: '#ffd94a', size: 12 });
+    }
+    car.speed *= 0.45;
+    car.x = ox + (car.x - ox) * 0.3;
+    car.y = oy + (car.y - oy) * 0.3;
+    resolveCircle(S.city, car, 20);
   }
-  if (G.saveGame) G.saveGame(G);
-  G.hud.showOver(kind);
+  collideCars(S, car, dt);
+  p.x = car.x;
+  p.y = car.y;
+  p.angle = car.angle;
+  // Run over a pedestrian: a crime, and the ped goes down.
+  for (const ped of S.peds) {
+    if (ped.state === 'down') continue;
+    const d = Math.hypot(ped.x - car.x, ped.y - car.y);
+    if (d < 26 && Math.abs(car.speed) > 60) {
+      ped.state = 'down';
+      ped.timer = 4;
+      S.police.crime(S, 1);
+      S.audio.thud();
+      S.hud.toast('You hit a pedestrian! Wanted +1.');
+      car.speed *= 0.7;
+    }
+  }
+  if (car.health <= 0) S.police.wasted(S);
 }
 
-// ---- drawing ----
-
-export function drawCar(ctx, car, t) {
+export function drawCar(ctx, car, time) {
   ctx.save();
   ctx.translate(car.x, car.y);
   ctx.rotate(car.angle);
-  const w = 44, h = 22;
   ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  ctx.fillRect(-w / 2 + 3, -h / 2 + 4, w, h);
-  ctx.fillStyle = car.type === 'police' ? '#f5f6fa' : car.color;
-  roundRect(ctx, -w / 2, -h / 2, w, h, 7);
+  ctx.fillRect(-22, -10 + 5, 44, 22);
+  // Body.
+  ctx.fillStyle = car.color;
+  ctx.beginPath();
+  ctx.roundRect(-22, -11, 44, 22, 7);
   ctx.fill();
-  if (car.type === 'police') {
-    ctx.fillStyle = '#2d3436';
-    ctx.fillRect(-4, -h / 2, 8, h);
-    // light bar
-    const blink = Math.floor(t * 0.008) % 2 === 0;
-    ctx.fillStyle = blink ? '#e84118' : '#0097e6';
-    ctx.fillRect(-6, -h / 2 - 3, 5, 4);
-    ctx.fillStyle = blink ? '#0097e6' : '#e84118';
-    ctx.fillRect(1, -h / 2 - 3, 5, 4);
+  // Windshield + rear window.
+  ctx.fillStyle = 'rgba(20,30,45,0.9)';
+  ctx.fillRect(6, -8, 8, 16);
+  ctx.fillRect(-16, -8, 6, 16);
+  // Headlights.
+  ctx.fillStyle = '#fff8c0';
+  ctx.fillRect(20, -9, 3, 4);
+  ctx.fillRect(20, 5, 3, 4);
+  if (car.kind === 'police') {
+    // Black-and-white cruiser with a flashing light bar.
+    ctx.fillStyle = '#f2f2f2';
+    ctx.fillRect(-6, -11, 14, 22);
+    ctx.fillStyle = '#181818';
+    ctx.fillRect(6, -11, 16, 22);
+    const flash = Math.floor(time * 4) % 2 === 0;
+    ctx.fillStyle = flash ? '#ff2a2a' : '#2a6aff';
+    ctx.fillRect(-2, -13, 5, 4);
+    ctx.fillStyle = flash ? '#2a6aff' : '#ff2a2a';
+    ctx.fillRect(-2, 9, 5, 4);
   }
-  ctx.fillStyle = '#2d3436';
-  ctx.fillRect(-2, -h / 2 + 3, 12, h - 6); // windshield
-  ctx.fillStyle = '#dfe6e9';
-  ctx.fillRect(w / 2 - 6, -h / 2 + 2, 3, 5);
-  ctx.fillRect(w / 2 - 6, h / 2 - 7, 3, 5);
-  // headlights
-  ctx.fillStyle = 'rgba(255,240,180,0.9)';
-  ctx.fillRect(w / 2 - 2, -h / 2 + 3, 3, 4);
-  ctx.fillRect(w / 2 - 2, h / 2 - 7, 3, 4);
   ctx.restore();
 }
 
-function roundRect(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
-}
-
-export function drawPlayer(ctx, G, t) {
-  const p = G.player;
+export function drawPlayer(ctx, S) {
+  const p = S.player;
   if (!p.onFoot) return;
   ctx.save();
   ctx.translate(p.x, p.y);
-  // shadow
-  ctx.fillStyle = 'rgba(0,0,0,0.3)';
-  ctx.beginPath(); ctx.ellipse(2, 4, 11, 8, 0, 0, Math.PI * 2); ctx.fill();
-  // body
-  ctx.fillStyle = '#ff6b81';
-  ctx.beginPath(); ctx.arc(0, 0, 11, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#2f3542';
-  ctx.beginPath(); ctx.arc(0, 0, 6, 0, Math.PI * 2); ctx.fill();
-  // direction tick
-  ctx.strokeStyle = '#fff';
-  ctx.lineWidth = 2.5;
-  ctx.beginPath(); ctx.moveTo(0, 0);
-  ctx.lineTo(Math.cos(p.angle) * 15, Math.sin(p.angle) * 15); ctx.stroke();
+  ctx.rotate(p.angle);
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath();
+  ctx.ellipse(2, 4, 12, 10, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ff5a3c';
+  ctx.beginPath();
+  ctx.arc(0, 0, 11, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = '#ffd94a';
+  ctx.beginPath();
+  ctx.arc(7, 0, 4, 0, Math.PI * 2);
+  ctx.fill();
   ctx.restore();
 }

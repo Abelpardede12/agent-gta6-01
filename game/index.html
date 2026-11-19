@@ -3,103 +3,99 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
-<title>Sunset Keys — open-city mini-game</title>
+<title>Sunset Keys — an open-city crime mini-game</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { width: 100%; height: 100%; overflow: hidden; background: #1a1218; }
-  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #f5f6fa; }
+  html, body { height: 100%; background: #1a1218; overflow: hidden; font-family: 'Segoe UI', system-ui, sans-serif; }
   #wrap { position: relative; width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
-  #game { width: min(100vw, 177.78vh); height: min(100vh, 56.25vw); display: block; background: #332b38; }
-  #hud { position: absolute; inset: 0; pointer-events: none; }
-  .hud-box { position: absolute; background: rgba(20, 14, 26, 0.72); border: 1px solid rgba(255, 215, 0, 0.35); border-radius: 10px; padding: 8px 12px; font-size: 15px; line-height: 1.45; }
-  #hud-left { top: 12px; left: 12px; }
-  #hud-cash { font-size: 20px; font-weight: 700; color: #7bed9f; }
-  #hud-stars { font-size: 18px; letter-spacing: 2px; }
-  #hud-speed { color: #ffd700; }
-  #hud-health-wrap { width: 150px; height: 10px; background: #2f3542; border-radius: 5px; margin-top: 4px; overflow: hidden; }
-  #hud-health { height: 100%; width: 100%; background: #2ed573; }
-  #hud-mission-box { top: 12px; left: 50%; transform: translateX(-50%); text-align: center; max-width: 46vw; }
-  #hud-mission { font-weight: 600; }
-  #hud-timer { color: #ffd700; font-weight: 700; }
-  #minimap { position: absolute; top: 12px; right: 12px; border: 1px solid rgba(255, 215, 0, 0.35); border-radius: 8px; background: rgba(20, 16, 28, 0.85); }
-  #toast {
-    position: absolute; left: 50%; bottom: 84px; transform: translateX(-50%) translateY(8px);
-    background: rgba(20, 14, 26, 0.88); border: 1px solid #ffd700; border-radius: 10px;
-    padding: 10px 18px; font-size: 16px; max-width: 80vw; text-align: center;
-    opacity: 0; transition: opacity 0.25s, transform 0.25s; pointer-events: none;
-  }
-  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-  #btn-mute { position: absolute; bottom: 12px; right: 12px; pointer-events: auto; }
-  .overlay {
-    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
-    background: linear-gradient(160deg, rgba(40, 16, 40, 0.92), rgba(120, 40, 20, 0.88)); text-align: center; padding: 20px;
-  }
-  .overlay.hidden { display: none; }
-  .overlay h1 { font-size: 56px; letter-spacing: 6px; color: #ffd700; text-shadow: 0 4px 0 #e84118, 0 8px 24px rgba(0,0,0,0.6); }
-  .overlay h2 { font-size: 30px; letter-spacing: 3px; color: #ffd700; }
-  .overlay p { margin: 10px 0; font-size: 16px; max-width: 560px; line-height: 1.5; }
-  .overlay .controls { font-size: 14px; color: #dfe6e9; background: rgba(0,0,0,0.35); border-radius: 10px; padding: 12px 18px; margin: 12px 0; text-align: left; line-height: 1.7; }
-  button {
-    pointer-events: auto; cursor: pointer; font: inherit; font-weight: 700; color: #1a1218;
-    background: #ffd700; border: none; border-radius: 10px; padding: 12px 26px; margin: 6px; font-size: 17px;
-  }
-  button:hover { background: #ffe14d; }
-  button.secondary { background: transparent; color: #ffd700; border: 2px solid #ffd700; }
-  #touch-ui { display: none; }
-  @media (pointer: coarse) {
-    #touch-ui { display: block; }
-    #joy { position: absolute; left: 18px; bottom: 18px; width: 120px; height: 120px; border-radius: 50%; background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.35); }
-    #joy-knob { position: absolute; left: 50%; top: 50%; width: 52px; height: 52px; margin: -26px 0 0 -26px; border-radius: 50%; background: rgba(255,215,0,0.75); }
-    #touch-btns { position: absolute; right: 18px; bottom: 18px; display: flex; gap: 10px; }
-    #touch-btns button { width: 64px; height: 64px; padding: 0; border-radius: 50%; font-size: 15px; }
-    #hud-mission-box { max-width: 60vw; }
-  }
+  canvas#game { width: min(100vw, 177.78vh); height: min(100vh, 56.25vw); display: block; background: #3d2c33; }
+  .hud { position: absolute; color: #fff; text-shadow: 0 1px 3px rgba(0,0,0,0.8); pointer-events: none; z-index: 5; }
+  #hud-top-left { top: 12px; left: 14px; font-size: 20px; font-weight: 700; }
+  #hud-stars { font-size: 22px; letter-spacing: 2px; }
+  #hud-top-right { top: 12px; right: 14px; text-align: right; }
+  #minimap { border: 2px solid rgba(255,255,255,0.5); border-radius: 6px; background: rgba(0,0,0,0.4); }
+  #hud-bottom-left { bottom: 12px; left: 14px; font-size: 18px; font-weight: 600; }
+  #hud-health-wrap { width: 160px; height: 10px; background: rgba(0,0,0,0.55); border-radius: 5px; margin-top: 4px; overflow: hidden; }
+  #hud-health { height: 100%; width: 100%; background: #7dd94a; }
+  #hud-mission-bar { top: 12px; left: 50%; transform: translateX(-50%); text-align: center; font-size: 16px; font-weight: 600; }
+  #hud-timer { font-size: 26px; font-weight: 800; }
+  #hud-pause-btn { top: 178px; right: 14px; pointer-events: auto; }
+  .hud button { pointer-events: auto; background: rgba(0,0,0,0.55); color: #fff; border: 1px solid rgba(255,255,255,0.5); border-radius: 6px; padding: 6px 10px; font-size: 14px; cursor: pointer; }
+  #toasts { position: absolute; bottom: 90px; left: 50%; transform: translateX(-50%); z-index: 6; display: flex; flex-direction: column; align-items: center; gap: 6px; pointer-events: none; width: min(90vw, 640px); }
+  .toast { background: rgba(20,12,20,0.88); border: 1px solid #ffd94a; color: #fff; padding: 8px 14px; border-radius: 8px; font-size: 15px; text-align: center; }
+  .overlay { position: absolute; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: linear-gradient(160deg, rgba(60,20,40,0.88), rgba(20,10,30,0.92)); color: #fff; text-align: center; padding: 20px; }
+  .overlay h1 { font-size: 56px; letter-spacing: 6px; color: #ffd94a; text-shadow: 0 0 24px rgba(255,120,40,0.7); }
+  .overlay h2 { font-size: 30px; color: #ffd94a; }
+  .overlay p { max-width: 560px; font-size: 16px; line-height: 1.5; color: #f0e0d8; }
+  .overlay .controls { font-size: 14px; line-height: 1.9; background: rgba(0,0,0,0.35); padding: 10px 18px; border-radius: 10px; }
+  .overlay button { background: #ff7a2a; color: #fff; border: none; border-radius: 8px; padding: 12px 28px; font-size: 18px; font-weight: 700; cursor: pointer; }
+  .overlay button.secondary { background: rgba(255,255,255,0.16); }
+  .overlay button:hover { filter: brightness(1.15); }
+  #pause, #busted { display: none; }
+  #touch-ui { display: none; position: absolute; inset: 0; z-index: 7; pointer-events: none; }
+  #joy-base { position: absolute; left: 24px; bottom: 24px; width: 120px; height: 120px; border-radius: 50%; background: rgba(255,255,255,0.12); border: 2px solid rgba(255,255,255,0.4); pointer-events: auto; touch-action: none; }
+  #joy-knob { position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; border-radius: 50%; background: rgba(255,255,255,0.45); }
+  .touch-btn { position: absolute; bottom: 40px; width: 64px; height: 64px; border-radius: 50%; background: rgba(255,255,255,0.2); border: 2px solid rgba(255,255,255,0.5); color: #fff; font-size: 20px; font-weight: 700; pointer-events: auto; touch-action: none; }
+  #btn-enter { right: 24px; }
+  #btn-brake { right: 104px; bottom: 110px; }
+  #btn-pause { right: 24px; bottom: 120px; width: 48px; height: 48px; font-size: 15px; }
 </style>
 </head>
 <body>
 <div id="wrap">
-  <canvas id="game" width="1280" height="720"></canvas>
-  <div id="hud">
-    <div class="hud-box" id="hud-left">
-      <div id="hud-cash">$0</div>
-      <div id="hud-stars">☆☆☆☆☆</div>
-      <div id="hud-speed">ON FOOT</div>
-      <div id="hud-health-wrap" class="hidden"><div id="hud-health"></div></div>
-    </div>
-    <div class="hud-box" id="hud-mission-box">
-      <div id="hud-mission">Waiting on Vex…</div>
-      <div id="hud-timer"></div>
-    </div>
-    <canvas id="minimap" width="180" height="170"></canvas>
-    <div id="toast"></div>
-    <button id="btn-mute" type="button">🔊 Sound</button>
+  <canvas id="game"></canvas>
+
+  <div class="hud" id="hud-top-left">
+    <div id="hud-cash">$0</div>
+    <div id="hud-stars">☆☆☆☆☆</div>
   </div>
+  <div class="hud" id="hud-top-right">
+    <canvas id="minimap" width="180" height="150"></canvas>
+  </div>
+  <div class="hud" id="hud-mission-bar">
+    <div id="hud-mission">No active mission</div>
+    <div id="hud-timer"></div>
+  </div>
+  <div class="hud" id="hud-bottom-left">
+    <div id="hud-speed">On foot</div>
+    <div id="hud-health-wrap"><div id="hud-health"></div></div>
+  </div>
+  <div class="hud" id="hud-pause-btn"><button id="btn-pause-hud">II Pause</button></div>
+
+  <div id="toasts"></div>
+
+  <div id="touch-ui">
+    <div id="joy-base"><div id="joy-knob"></div></div>
+    <button class="touch-btn" id="btn-enter">E</button>
+    <button class="touch-btn" id="btn-brake">STOP</button>
+    <button class="touch-btn" id="btn-pause">II</button>
+  </div>
+
   <div class="overlay" id="menu">
     <h1>SUNSET KEYS</h1>
-    <p>A sun-soaked open city. Steal a car, outrun the law, and run jobs for Vex the fixer — five drops, five paydays.</p>
+    <p>An open-city crime mini-game. Cruise a sun-soaked coastal town, steal any car you like, outrun the cops, and run jobs for Vex — the fixer who owns these streets after dark.</p>
     <div class="controls">
-      <b>On foot:</b> WASD / arrows to walk &nbsp;·&nbsp; <b>E</b> enter / exit car<br>
-      <b>Driving:</b> W accelerate · S brake / reverse · A D steer · Space handbrake<br>
-      <b>P</b> pause · <b>M</b> mute · Touch: left stick to move / drive, E + BRK buttons
+      <b>WASD / arrows</b> — walk &amp; drive &nbsp;·&nbsp; <b>E</b> — enter / exit car<br>
+      <b>Space</b> — handbrake &nbsp;·&nbsp; <b>P</b> — pause &nbsp;·&nbsp; <b>M</b> — mute<br>
+      Steal a car, hit a pedestrian, or ram a cop and your wanted stars climb.<br>
+      Lose the cops for 12 seconds and the heat cools off.
     </div>
-    <div>
-      <button id="btn-start" type="button">Start</button>
-      <button id="btn-continue" type="button" class="secondary hidden">Continue</button>
-    </div>
-    <p style="font-size:13px;color:#b2bec3">Progress saves on this device. An original game — no real places, people, or brands.</p>
+    <button id="btn-start">Start Engine</button>
+    <button id="btn-continue" class="secondary" style="display:none">Continue — saved game</button>
+    <p id="save-line" style="font-size:13px;color:#cbb"></p>
+    <button id="btn-mute" class="secondary">🔊 Sound on</button>
   </div>
-  <div class="overlay hidden" id="pause">
-    <h2>PAUSED</h2>
+
+  <div class="overlay" id="pause">
+    <h2>Paused</h2>
     <p>Take a breath. The city waits.</p>
-    <div>
-      <button id="btn-resume" type="button">Resume</button>
-      <button id="btn-menu-quit" type="button" class="secondary">Save &amp; Menu</button>
-    </div>
+    <button id="btn-resume">Resume</button>
   </div>
-  <div class="overlay hidden" id="over">
-    <h2 id="over-title">BUSTED</h2>
-    <p id="over-text"></p>
-    <div><button id="btn-restart" type="button">Back to the streets</button></div>
+
+  <div class="overlay" id="busted">
+    <h2>BUSTED!</h2>
+    <p id="busted-cash"></p>
+    <button id="btn-restart">Back to the streets</button>
   </div>
 </div>
 <script type="module" src="./src/main.js"></script>
