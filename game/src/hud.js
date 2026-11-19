@@ -1,151 +1,123 @@
-// The HUD: money, wanted stars, the current job, speed and car health as DOM text, the
-// minimap as a small canvas, toasts for the fixer and the street, and the title / pause /
-// busted overlays. The game canvas stays a canvas; the HUD stays readable text on top of it.
+// Sunset Keys — HUD DOM, minimap, toasts, menus.
+import { WORLD_W, WORLD_H, BLOCK } from './city.js';
 
-import { BEACH_X, MISSION, SEA_X, WORLD } from './config.js';
-
-const $ = (id) => document.getElementById(id);
-
-export function createHud() {
-  const moneyEl = $('money');
-  const starsEl = $('stars');
-  const missionEl = $('mission');
-  const speedEl = $('speed');
-  const hpWrap = $('hp-wrap');
-  const hpFill = $('hp-fill');
-  const toastEl = $('toast');
-  const minimap = $('minimap');
-  const overlay = $('overlay');
-  const overlayTitle = $('overlay-title');
-  const overlayBody = $('overlay-body');
-  const overlayHint = $('overlay-hint');
-  const mapCtx = minimap.getContext('2d');
-  let toastTimer = 0;
-
-  function fmtMoney(n) {
-    return `$${Math.floor(n).toLocaleString('en-US')}`;
-  }
-
-  function toast(text, ms) {
-    toastEl.textContent = text;
-    toastEl.classList.add('show');
-    window.clearTimeout(toastTimer);
-    toastTimer = window.setTimeout(() => toastEl.classList.remove('show'), ms ?? 2600);
-  }
-
-  function showScreen(name, data) {
-    if (name === 'none') {
-      overlay.classList.add('hidden');
-      return;
-    }
-    overlay.classList.remove('hidden');
-    if (name === 'title') {
-      overlayTitle.textContent = 'SUNSET KEYS';
-      overlayBody.innerHTML = `A sun-soaked open city. Steal a ride, outrun the heat, run jobs for Vex.<br><br>`
-        + `<b>WASD / arrows</b> — drive &amp; walk &nbsp;·&nbsp; <b>E</b> — steal / leave a car<br>`
-        + `<b>P</b> — pause &nbsp;·&nbsp; <b>M</b> — mute &nbsp;·&nbsp; touch buttons work too<br><br>`
-        + `Best cash: <b>${fmtMoney(data?.best ?? 0)}</b> &nbsp;·&nbsp; Jobs done: <b>${data?.missions ?? 0}</b>`;
-      overlayHint.textContent = 'Click or press Space to start';
-    } else if (name === 'paused') {
-      overlayTitle.textContent = 'PAUSED';
-      overlayBody.innerHTML = `Cash ${fmtMoney(data?.cash ?? 0)} &nbsp;·&nbsp; Jobs done ${data?.missions ?? 0} &nbsp;·&nbsp; Best streak ${data?.streak ?? 0}`;
-      overlayHint.textContent = 'Press P or Space to keep playing';
-    } else if (name === 'busted') {
-      overlayTitle.textContent = 'BUSTED!';
-      overlayBody.innerHTML = `The cops caught you on foot and took <b>${fmtMoney(data?.lost ?? 0)}</b>.`
-        + `<br>Cash left: <b>${fmtMoney(data?.cash ?? 0)}</b> — the city is still yours.`;
-      overlayHint.textContent = 'Press Space to get back out there';
-    }
-  }
-
-  function drawMinimap(world, time) {
-    const w = minimap.width;
-    const h = minimap.height;
-    const sx = w / WORLD.width;
-    const sy = h / WORLD.height;
-    mapCtx.fillStyle = '#10131c';
-    mapCtx.fillRect(0, 0, w, h);
-    // Sea and sand on the east edge.
-    mapCtx.fillStyle = '#1d6074';
-    mapCtx.fillRect(SEA_X * sx, 0, w - SEA_X * sx, h);
-    mapCtx.fillStyle = '#c9a55e';
-    mapCtx.fillRect(BEACH_X * sx, 0, (SEA_X - BEACH_X) * sx, h);
-    // Streets.
-    mapCtx.fillStyle = '#6b6578';
-    for (const rx of [160, 560, 960, 1360, 1760, 2160]) mapCtx.fillRect(rx * sx - 3, 0, 6, h);
-    for (const ry of [160, 480, 800, 1120, 1440, 1760]) mapCtx.fillRect(0, ry * sy - 3, w, 6);
-    // Buildings.
-    mapCtx.fillStyle = '#a49db0';
-    for (const b of world.city.buildings) {
-      mapCtx.fillRect(b.x * sx, b.y * sy, Math.max(1.5, b.w * sx), Math.max(1.5, b.h * sy));
-    }
-    // The job beacon pulses yellow.
-    const job = world.missions.active;
-    if (job) {
-      const r = 4 + Math.sin(time * 5) * 1.6;
-      mapCtx.fillStyle = '#ffd23f';
-      mapCtx.beginPath();
-      mapCtx.arc(job.x * sx, job.y * sy, r, 0, Math.PI * 2);
-      mapCtx.fill();
-    }
-    // Traffic as faint dots, police flashing red and blue.
-    mapCtx.fillStyle = '#b9b3c4';
-    for (const c of world.traffic.cars) mapCtx.fillRect(c.x * sx - 1, c.y * sy - 1, 2, 2);
-    for (const c of world.police.cars) {
-      mapCtx.fillStyle = Math.sin(time * 9 + c.lightPhase) > 0 ? '#ff4d4d' : '#4d7dff';
-      mapCtx.beginPath();
-      mapCtx.arc(c.x * sx, c.y * sy, 3, 0, Math.PI * 2);
-      mapCtx.fill();
-    }
-    // The player is the white dot that matters.
-    const px = world.player.x * sx;
-    const py = world.player.y * sy;
-    mapCtx.fillStyle = '#ffffff';
-    mapCtx.beginPath();
-    mapCtx.arc(px, py, 3.4, 0, Math.PI * 2);
-    mapCtx.fill();
-    mapCtx.strokeStyle = 'rgba(255,255,255,0.65)';
-    mapCtx.beginPath();
-    mapCtx.arc(px, py, 5.4, 0, Math.PI * 2);
-    mapCtx.stroke();
-  }
-
-  return {
-    toast,
-    showScreen,
-    /** Refresh every HUD readout from the live world; cheap enough to run every frame. */
-    update(world, time) {
-      const p = world.player;
-      moneyEl.textContent = fmtMoney(world.cash);
-      const wanted = world.police.wanted;
-      starsEl.textContent = '★'.repeat(wanted) + '☆'.repeat(5 - wanted);
-      starsEl.classList.toggle('hot', wanted > 0);
-      const job = world.missions.active;
-      if (job) {
-        const dist = Math.hypot(job.x - p.x, job.y - p.y);
-        const secs = Math.max(0, Math.ceil(job.timeLeft));
-        missionEl.innerHTML = `<b>${job.name}</b> · ${Math.round(dist)}m · `
-          + `<span class="${secs <= 10 ? 'urgent' : ''}">${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}</span>`
-          + ` · $${job.reward}`;
-        missionEl.classList.remove('hidden');
-      } else {
-        missionEl.innerHTML = world.missions.streak > 0
-          ? `Streak <b>${world.missions.streak}</b> — Vex is lining up the next job…`
-          : 'Vex is lining up a job…';
-        missionEl.classList.remove('hidden');
-      }
-      if (p.onFoot) {
-        speedEl.textContent = 'ON FOOT';
-        hpWrap.classList.add('hidden');
-      } else {
-        speedEl.textContent = `${Math.round(Math.abs(p.car.speed) * 0.24)} mph`;
-        hpWrap.classList.remove('hidden');
-        hpFill.style.width = `${Math.max(0, p.car.hp)}%`;
-        hpFill.classList.toggle('low', p.car.hp < 35);
-      }
-      drawMinimap(world, time);
-    },
-    /** The reach radius the renderer uses for the beacon ring. */
-    reachRadius: MISSION.reachRadius,
+export function createHud(G) {
+  const $ = (id) => document.getElementById(id);
+  const hud = {
+    cash: $('hud-cash'), stars: $('hud-stars'), speed: $('hud-speed'),
+    health: $('hud-health'), healthWrap: $('hud-health-wrap'),
+    mission: $('hud-mission'), timer: $('hud-timer'),
+    minimap: $('minimap'), toastEl: $('toast'),
+    menu: $('menu'), pause: $('pause'), over: $('over'),
+    overTitle: $('over-title'), overText: $('over-text'),
+    _toastT: 0, _last: {},
   };
+  hud.toast = (msg) => {
+    hud.toastEl.textContent = msg;
+    hud.toastEl.classList.add('show');
+    hud._toastT = 3.2;
+  };
+  hud.showMenu = () => {
+    hud.menu.classList.remove('hidden');
+    hud.pause.classList.add('hidden');
+    hud.over.classList.add('hidden');
+    const cont = $('btn-continue');
+    const hasSave = !!G.saveData;
+    cont.classList.toggle('hidden', !hasSave);
+    $('btn-start').textContent = hasSave ? 'New Game' : 'Start';
+  };
+  hud.showOver = (kind) => {
+    hud.over.classList.remove('hidden');
+    if (kind === 'busted') {
+      hud.overTitle.textContent = 'BUSTED';
+      hud.overText.textContent = 'The Keys PD caught you. You lost half your cash.';
+    } else {
+      hud.overTitle.textContent = 'WASTED';
+      hud.overText.textContent = 'Your ride is scrap. You lost the current mission.';
+    }
+  };
+  hud.hideOverlays = () => {
+    hud.menu.classList.add('hidden');
+    hud.pause.classList.add('hidden');
+    hud.over.classList.add('hidden');
+  };
+  hud.update = (dt) => {
+    if (hud._toastT > 0) {
+      hud._toastT -= dt;
+      if (hud._toastT <= 0) hud.toastEl.classList.remove('show');
+    }
+    const set = (el, key, val) => {
+      if (hud._last[key] !== val) { hud._last[key] = val; el.textContent = val; }
+    };
+    set(hud.cash, 'cash', `$${G.cash}`);
+    const stars = '★'.repeat(G.wanted) + '☆'.repeat(5 - G.wanted);
+    set(hud.stars, 'stars', stars);
+    hud.stars.style.color = G.wanted > 0 ? '#ff4757' : '#f5f6fa';
+    const kmh = G.player.onFoot ? 0 : Math.round(Math.abs(G.player.speed) * 0.12);
+    set(hud.speed, 'speed', G.player.onFoot ? 'ON FOOT' : `${kmh} km/h`);
+    if (G.player.onFoot || !G.player.car) {
+      hud.healthWrap.classList.add('hidden');
+    } else {
+      hud.healthWrap.classList.remove('hidden');
+      const hp = Math.max(0, Math.round(G.player.car.health));
+      hud.health.style.width = `${hp}%`;
+      hud.health.style.background = hp > 50 ? '#2ed573' : hp > 25 ? '#ffa502' : '#ff4757';
+    }
+    if (G.mission) {
+      const m = G.mission;
+      set(hud.mission, 'mission', `Mission ${m.idx + 1}/5 — reach the beacon ($${m.reward})`);
+      set(hud.timer, 'timer', `${Math.max(0, Math.ceil(m.timer))}s`);
+      hud.timer.style.color = m.timer < 10 ? '#ff4757' : '#ffd700';
+    } else {
+      set(hud.mission, 'mission', 'Waiting on Vex…');
+      set(hud.timer, 'timer', '');
+    }
+    drawMinimap(hud.minimap, G);
+  };
+  return hud;
+}
+
+function drawMinimap(canvas, G) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  const s = Math.min(W / WORLD_W, H / WORLD_H);
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(20,16,28,0.85)';
+  ctx.fillRect(0, 0, W, H);
+  // beach + water
+  ctx.fillStyle = '#d9a05b';
+  ctx.fillRect(0, G.city.beachY * s, W, (2260 - G.city.beachY) * s);
+  ctx.fillStyle = '#2a6f8f';
+  ctx.fillRect(0, 2260 * s, W, H - 2260 * s);
+  // roads
+  ctx.strokeStyle = '#6b6378';
+  ctx.lineWidth = 1;
+  for (let i = 0; i <= 14; i++) {
+    ctx.beginPath(); ctx.moveTo(i * BLOCK * s, 0); ctx.lineTo(i * BLOCK * s, G.city.beachY * s); ctx.stroke();
+  }
+  for (let j = 0; j < 9; j++) {
+    ctx.beginPath(); ctx.moveTo(0, j * BLOCK * s); ctx.lineTo(W, j * BLOCK * s); ctx.stroke();
+  }
+  // buildings
+  ctx.fillStyle = 'rgba(200,150,120,0.6)';
+  for (const b of G.city.buildings) ctx.fillRect(b.x * s, b.y * s, Math.max(1, b.w * s), Math.max(1, b.h * s));
+  // beacon
+  if (G.mission) {
+    const m = G.mission;
+    ctx.fillStyle = '#ffd700';
+    ctx.beginPath(); ctx.arc(m.x * s, m.y * s, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255,215,0,0.6)';
+    ctx.beginPath(); ctx.arc(m.x * s, m.y * s, 7, 0, Math.PI * 2); ctx.stroke();
+  }
+  // police
+  ctx.fillStyle = '#ff4757';
+  for (const c of G.police) { ctx.beginPath(); ctx.arc(c.x * s, c.y * s, 3, 0, Math.PI * 2); ctx.fill(); }
+  // player arrow
+  const p = G.player;
+  ctx.save();
+  ctx.translate(p.x * s, p.y * s);
+  ctx.rotate(p.angle);
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.moveTo(6, 0); ctx.lineTo(-4, -4); ctx.lineTo(-4, 4); ctx.closePath(); ctx.fill();
+  ctx.restore();
 }

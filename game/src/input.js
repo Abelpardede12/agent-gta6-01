@@ -1,97 +1,87 @@
-// Keyboard and touch input. Held keys give a steering state; one-shot presses (start,
-// pause, enter a car, mute) are queued as bit flags and taken once by the loop, so a press
-// between two frames is never lost and never counted twice. Touch buttons carry data-key
-// attributes and drive the same state, so a phone plays the same game as a keyboard.
-
-export const ACTION_CONFIRM = 1;
-export const ACTION_PAUSE = 2;
-export const ACTION_ENTER = 4;
-export const ACTION_MUTE = 8;
-
-const UP = new Set(['ArrowUp', 'KeyW']);
-const DOWN = new Set(['ArrowDown', 'KeyS']);
-const LEFT = new Set(['ArrowLeft', 'KeyA']);
-const RIGHT = new Set(['ArrowRight', 'KeyD']);
-const CONFIRM = new Set(['Space', 'Enter']);
-const PAUSE = new Set(['KeyP', 'Escape']);
-const ENTER = new Set(['KeyE', 'KeyF']);
-const MUTE = new Set(['KeyM']);
-
+// Sunset Keys — keyboard + touch input.
 export function createInput() {
-  const held = { up: false, down: false, left: false, right: false };
-  let actions = 0;
-
-  function press(code) {
-    if (UP.has(code)) held.up = true;
-    else if (DOWN.has(code)) held.down = true;
-    else if (LEFT.has(code)) held.left = true;
-    else if (RIGHT.has(code)) held.right = true;
-    else if (CONFIRM.has(code)) actions |= ACTION_CONFIRM;
-    else if (PAUSE.has(code)) actions |= ACTION_PAUSE;
-    else if (ENTER.has(code)) actions |= ACTION_ENTER;
-    else if (MUTE.has(code)) actions |= ACTION_MUTE;
-    else return false;
-    return true;
-  }
-
-  window.addEventListener('keydown', (event) => {
-    if (event.repeat) {
-      if (UP.has(event.code) || DOWN.has(event.code) || LEFT.has(event.code) || RIGHT.has(event.code)) {
-        event.preventDefault();
-      }
-      return;
-    }
-    if (press(event.code)) event.preventDefault();
-  });
-  window.addEventListener('keyup', (event) => {
-    if (UP.has(event.code)) held.up = false;
-    else if (DOWN.has(event.code)) held.down = false;
-    else if (LEFT.has(event.code)) held.left = false;
-    else if (RIGHT.has(event.code)) held.right = false;
-  });
-  // A key released while the tab is hidden never sends keyup: let go of everything on blur.
-  window.addEventListener('blur', () => {
-    held.up = false;
-    held.down = false;
-    held.left = false;
-    held.right = false;
-  });
-
-  // Touch buttons: any element with data-key="up|down|left|right|enter" drives the same state.
-  document.querySelectorAll('[data-key]').forEach((el) => {
-    const key = el.getAttribute('data-key');
-    const down = (event) => {
-      event.preventDefault();
-      if (key === 'enter') actions |= ACTION_ENTER;
-      else if (key in held) held[key] = true;
-    };
-    const up = (event) => {
-      event.preventDefault();
-      if (key in held) held[key] = false;
-    };
-    el.addEventListener('pointerdown', down);
-    el.addEventListener('pointerup', up);
-    el.addEventListener('pointerleave', up);
-    el.addEventListener('pointercancel', up);
-  });
-
-  return {
-    get up() { return held.up; },
-    get down() { return held.down; },
-    get left() { return held.left; },
-    get right() { return held.right; },
-    /** The one-shot presses since the last call, as ACTION_* flags. */
-    takeActions() {
-      const taken = actions;
-      actions = 0;
-      return taken;
-    },
-    /** For the autopilot in screenshots: drive straight from a plain object. */
-    setHeld(next) {
-      held.up = !!next.up;
-      held.down = !!next.down;
-      held.left = !!next.left;
-      held.right = !!next.right;
-    },
+  const input = {
+    keys: new Set(),
+    pressed: new Set(),
+    joy: { x: 0, y: 0, active: false },
+    btnE: false, btnBrake: false,
+    touch: false,
+    up: false, down: false, left: false, right: false,
+    handbrake: false,
   };
+  window.addEventListener('keydown', (e) => {
+    if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+    if (!e.repeat) input.pressed.add(e.code);
+    input.keys.add(e.code);
+  });
+  window.addEventListener('keyup', (e) => input.keys.delete(e.code));
+  window.addEventListener('blur', () => { input.keys.clear(); input.joy.active = false; });
+
+  // touch controls: virtual joystick (left) + action buttons (right)
+  const isTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+  input.touch = isTouch;
+  if (isTouch) {
+    const zone = document.createElement('div');
+    zone.id = 'touch-ui';
+    zone.innerHTML = `
+      <div id="joy"><div id="joy-knob"></div></div>
+      <div id="touch-btns">
+        <button id="btn-e" type="button">E</button>
+        <button id="btn-brake" type="button">BRK</button>
+        <button id="btn-pause" type="button">II</button>
+      </div>`;
+    document.body.appendChild(zone);
+    const joy = zone.querySelector('#joy');
+    const knob = zone.querySelector('#joy-knob');
+    const setJoy = (cx, cy) => {
+      const r = joy.getBoundingClientRect();
+      let dx = (cx - (r.left + r.width / 2)) / (r.width / 2);
+      let dy = (cy - (r.top + r.height / 2)) / (r.height / 2);
+      const len = Math.hypot(dx, dy);
+      if (len > 1) { dx /= len; dy /= len; }
+      input.joy.x = dx; input.joy.y = dy; input.joy.active = true;
+      knob.style.transform = `translate(${dx * 34}px, ${dy * 34}px)`;
+    };
+    const clearJoy = () => { input.joy.x = 0; input.joy.y = 0; input.joy.active = false; knob.style.transform = 'translate(0,0)'; };
+    joy.addEventListener('pointerdown', (e) => { joy.setPointerCapture(e.pointerId); setJoy(e.clientX, e.clientY); });
+    joy.addEventListener('pointermove', (e) => { if (input.joy.active) setJoy(e.clientX, e.clientY); });
+    joy.addEventListener('pointerup', clearJoy);
+    joy.addEventListener('pointercancel', clearJoy);
+    const hold = (id, on, off) => {
+      const el = zone.querySelector(id);
+      el.addEventListener('pointerdown', (e) => { e.preventDefault(); on(); });
+      el.addEventListener('pointerup', off);
+      el.addEventListener('pointercancel', off);
+      el.addEventListener('pointerleave', off);
+    };
+    hold('#btn-e', () => { input.btnE = true; input.pressed.add('KeyE'); }, () => { input.btnE = false; });
+    hold('#btn-brake', () => { input.btnBrake = true; }, () => { input.btnBrake = false; });
+    zone.querySelector('#btn-pause').addEventListener('click', () => input.pressed.add('KeyP'));
+  }
+  return input;
 }
+
+// Recompute directional state from keys / joystick. Call once per frame.
+export function pollInput(input) {
+  const k = input.keys;
+  const jx = input.joy.active ? input.joy.x : 0;
+  const jy = input.joy.active ? input.joy.y : 0;
+  input.up = k.has('KeyW') || k.has('ArrowUp') || jy < -0.35;
+  input.down = k.has('KeyS') || k.has('ArrowDown') || jy > 0.35;
+  input.left = k.has('KeyA') || k.has('ArrowLeft') || jx < -0.35;
+  input.right = k.has('KeyD') || k.has('ArrowRight') || jx > 0.35;
+  input.handbrake = k.has('Space') || input.btnBrake;
+  // expose analog steer for driving
+  input.steer = (input.right ? 1 : 0) - (input.left ? 1 : 0) + (input.joy.active ? jx : 0);
+  input.throttle = (input.up ? 1 : 0) - (input.down ? 1 : 0) + (input.joy.active ? -jy : 0);
+  input.steer = Math.max(-1, Math.min(1, input.steer));
+  input.throttle = Math.max(-1, Math.min(1, input.throttle));
+}
+
+// Edge-triggered key: true once per physical press.
+export function wasPressed(input, code) {
+  if (input.pressed.has(code)) { input.pressed.delete(code); return true; }
+  return false;
+}
+
+export function endFrameInput(input) { input.pressed.clear(); }

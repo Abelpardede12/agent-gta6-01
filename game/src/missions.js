@@ -1,89 +1,89 @@
-// The jobs: a fixer called Vex texts the player timed checkpoint runs across the city.
-// Reach the beacon before the clock runs out and the cash is yours; chain jobs without
-// failing one and the pay climbs. Fail the clock and the streak resets, but the city keeps
-// offering work — there is always another run.
+// Sunset Keys — mission chain from fixer "Vex": drive to the beacon before the timer ends.
+import { roadPointNear } from './city.js';
+import { addWanted } from './player.js';
 
-import { MISSION } from './config.js';
-import { randomRoadPoint } from './city.js';
-import { pick } from './random.js';
-
-const JOB_NAMES = [
-  'Pier Run', 'Downtown Dash', 'Beach Blitz', 'Sunset Sprint', 'Harbor Haul',
-  'Neon Nights', 'Palm Court Pickup', 'Rooftop Relay', 'Boardwalk Bolt', 'Keys Caper',
+export const MISSIONS = [
+  { reward: 150, timePerPx: 1 / 260, minD: 500, maxD: 900, vex: 'Vex: Easy money. Get to the pier drop before the clock runs out.' },
+  { reward: 200, timePerPx: 1 / 270, minD: 700, maxD: 1200, vex: 'Vex: The crew liked that. Next one is further — don\'t dawdle.' },
+  { reward: 260, timePerPx: 1 / 280, minD: 900, maxD: 1500, vex: 'Vex: Heat\'s on this one. Cops will notice you. Go fast, stay cool.' },
+  { reward: 330, timePerPx: 1 / 290, minD: 1100, maxD: 1700, vex: 'Vex: Big score, big risk. They\'re watching the drop. Make it count.' },
+  { reward: 400, timePerPx: 1 / 300, minD: 1300, maxD: 2000, vex: 'Vex: Last one, legend. Pull this off and the Keys are yours.' },
 ];
 
-const VEX_LINES = [
-  'Vex: Package at the marker. Fast feet, faster wheels.',
-  'Vex: Client is waiting. Don\'t keep them waiting.',
-  'Vex: Take the back streets if the heat is on you.',
-  'Vex: This one pays well. Don\'t scratch the paint.',
-  'Vex: Clock\'s ticking, Keys. Move.',
-];
-
-export function createMissions(rng, city) {
-  return {
-    rng,
-    city,
-    active: null,
-    cooldown: MISSION.firstCooldown,
-    streak: 0,
-    total: 0,
-    bestStreak: 0,
-    line: '',
+export function startMission(G, idx) {
+  const def = MISSIONS[idx % MISSIONS.length];
+  const p = G.player;
+  const spot = roadPointNear(G.rng, p.x, p.y, def.minD, def.maxD);
+  const dist = Math.hypot(spot.x - p.x, spot.y - p.y);
+  const total = Math.max(20, Math.round(dist * def.timePerPx) + 18);
+  G.mission = {
+    idx, x: spot.x, y: spot.y, timer: total, total,
+    reward: def.reward, vex: def.vex, dist,
   };
+  if (idx >= 2) addWanted(G, 1);
+  G.hud.toast(`Mission ${idx + 1}/5: reach the beacon in ${total}s — $${def.reward}`);
 }
 
-function startMission(missions, player) {
-  const spot = randomRoadPoint(
-    missions.rng, player.x, player.y, 480, 1050,
-  );
-  const dist = Math.hypot(spot.x - player.x, spot.y - player.y);
-  const timeLimit = Math.max(
-    MISSION.minTime,
-    Math.min(MISSION.maxTime, dist / 26 + 14 - missions.streak * 1.5),
-  );
-  missions.active = {
-    x: spot.x,
-    y: spot.y,
-    timeLeft: timeLimit,
-    total: timeLimit,
-    reward: MISSION.baseReward + missions.streak * MISSION.streakBonus,
-    name: pick(missions.rng, JOB_NAMES),
-  };
-  missions.line = pick(missions.rng, VEX_LINES);
-  return missions.active;
-}
-
-export function stepMissions(missions, dt, player, events) {
-  if (!missions.active) {
-    missions.cooldown -= dt;
-    if (missions.cooldown <= 0) {
-      const job = startMission(missions, player);
-      events.push({ type: 'mission-start', job, line: missions.line });
-    }
+export function updateMissions(G, dt) {
+  if (G.state !== 'playing') return;
+  if (!G.mission) {
+    G.nextMissionT = (G.nextMissionT || 0) - dt;
+    if (G.nextMissionT <= 0) startMission(G, G.missionsDone % MISSIONS.length);
     return;
   }
-  const job = missions.active;
-  job.timeLeft -= dt;
-  const dist = Math.hypot(job.x - player.x, job.y - player.y);
-  if (dist < MISSION.reachRadius) {
-    missions.streak += 1;
-    missions.total += 1;
-    missions.bestStreak = Math.max(missions.bestStreak, missions.streak);
-    events.push({ type: 'mission-done', job, streak: missions.streak });
-    missions.active = null;
-    missions.cooldown = 3.5;
+  const m = G.mission;
+  m.timer -= dt;
+  const d = Math.hypot(G.player.x - m.x, G.player.y - m.y);
+  if (d < 55) {
+    G.cash += m.reward;
+    G.missionsDone++;
+    G.best = Math.max(G.best, G.cash);
+    G.audio.jingle();
+    G.hud.toast(`+$${m.reward}! ${m.vex}`);
+    G.mission = null;
+    G.nextMissionT = 2.5;
+    if (G.saveGame) G.saveGame(G);
     return;
   }
-  if (job.timeLeft <= 0) {
-    events.push({ type: 'mission-failed', job });
-    missions.streak = 0;
-    missions.active = null;
-    missions.cooldown = MISSION.failCooldown;
+  if (m.timer <= 0) {
+    G.hud.toast('Too slow — Vex gives you another shot at the same drop.');
+    m.timer = m.total;
   }
 }
 
-/** A job's pay, for the HUD's mission line. */
-export function missionReward(missions) {
-  return MISSION.baseReward + missions.streak * MISSION.streakBonus;
+export function drawBeacon(ctx, G, t) {
+  const m = G.mission;
+  if (!m) return;
+  const pulse = 1 + Math.sin(t * 0.006) * 0.15;
+  // light column
+  const grad = ctx.createLinearGradient(0, m.y - 260, 0, m.y);
+  grad.addColorStop(0, 'rgba(255,215,0,0)');
+  grad.addColorStop(1, 'rgba(255,215,0,0.35)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(m.x - 26, m.y - 260, 52, 260);
+  // glowing beacon ring
+  ctx.save();
+  ctx.translate(m.x, m.y);
+  ctx.strokeStyle = '#ffd700';
+  ctx.lineWidth = 4;
+  ctx.beginPath(); ctx.arc(0, 0, 34 * pulse, 0, Math.PI * 2); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,215,0,0.25)';
+  ctx.beginPath(); ctx.arc(0, 0, 34 * pulse, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#ffd700';
+  ctx.beginPath(); ctx.arc(0, 0, 10, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+  // direction arrow from player to beacon
+  const p = G.player;
+  const dx = m.x - p.x, dy = m.y - p.y;
+  const d = Math.hypot(dx, dy);
+  if (d > 180) {
+    const a = Math.atan2(dy, dx);
+    const ax = p.x + Math.cos(a) * 70, ay = p.y + Math.sin(a) * 70;
+    ctx.save();
+    ctx.translate(ax, ay);
+    ctx.rotate(a);
+    ctx.fillStyle = 'rgba(255,215,0,0.9)';
+    ctx.beginPath(); ctx.moveTo(14, 0); ctx.lineTo(-8, -9); ctx.lineTo(-8, 9); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
 }

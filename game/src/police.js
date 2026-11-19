@@ -1,137 +1,89 @@
-// The wanted system and the police who answer it. Crimes raise the heat; clean driving lets
-// it fade, one star at a time. While any star is lit, cruisers spawn at the edge of the action
-// and hunt the player along the street grid, re-routing every half second; when the heat is
-// gone they peel off and drive away. A cruiser that catches the player on foot makes the bust.
+// Sunset Keys — wanted stars, police spawn/chase, busted logic.
+import { roadPointNear, collideBuildings } from './city.js';
+import { gameOver } from './player.js';
 
-import { POLICE, WANTED_DECAY_SECONDS, WANTED_MAX } from './config.js';
-import { randomRoadPoint, routeTo } from './city.js';
-import { createCar, stepCar } from './player.js';
-
-export function createPolice() {
-  return {
-    cars: [],
-    wanted: 0,
-    decayTimer: 0,
-    spawnTimer: 0,
-    // The siren wails while any star is lit; the HUD flashes the stars with it.
-    sirenPhase: 0,
-  };
-}
-
-/** A crime just happened: raise the heat, reset the cool-down, and remember what it was. */
-export function addWanted(police, amount, reason, events) {
-  const before = police.wanted;
-  police.wanted = Math.min(WANTED_MAX, police.wanted + amount);
-  police.decayTimer = WANTED_DECAY_SECONDS;
-  if (police.wanted > before) {
-    events.push({ type: 'wanted', wanted: police.wanted, reason });
-  }
-}
-
-/** How many cruisers the current heat calls for: one, then another every two stars. */
-export function wantedCruisers(wanted) {
-  if (wanted === 0) return 0;
-  return Math.min(POLICE.maxActive, 1 + Math.floor(wanted / 2));
-}
-
-function spawnCruiser(police, rng, player) {
-  const spot = randomRoadPoint(rng, player.x, player.y, POLICE.spawnDistance - 160, POLICE.spawnDistance + 260);
-  const car = createCar('#2b4acb', spot.x, spot.y, 0);
-  car.isPolice = true;
-  car.route = [];
-  car.routeTimer = 0;
-  car.ramTimer = 0;
-  car.lightPhase = rng() * Math.PI * 2;
-  police.cars.push(car);
-  return car;
-}
-
-export function stepPolice(police, dt, rng, player, city, events) {
-  police.sirenPhase += dt;
-  // Clean driving cools the heat off, one star per quiet stretch.
-  if (police.wanted > 0) {
-    police.decayTimer -= dt;
-    if (police.decayTimer <= 0) {
-      police.wanted -= 1;
-      police.decayTimer = WANTED_DECAY_SECONDS;
-      events.push({ type: 'wanted', wanted: police.wanted, reason: 'cooling off' });
+export function updatePolice(G, dt) {
+  const p = G.player;
+  // decay: no crime for 12s and no police nearby -> lose a star every 6s
+  if (G.wanted > 0 && G.time - G.lastCrime > 12) {
+    let near = false;
+    for (const c of G.police) {
+      if (Math.hypot(c.x - p.x, c.y - p.y) < 500) { near = true; break; }
     }
+    if (!near) {
+      G.decayT = (G.decayT || 0) + dt;
+      if (G.decayT >= 6) { G.decayT = 0; G.wanted = Math.max(0, G.wanted - 1); }
+    } else G.decayT = 0;
+  } else G.decayT = 0;
+  if (G.disguiseCd > 0) G.disguiseCd -= dt;
+
+  // spawn up to 1 + stars cruisers
+  const want = G.wanted > 0 ? Math.min(1 + G.wanted, 4) : 0;
+  while (G.police.length < want) {
+    const spot = roadPointNear(G.rng, p.x, p.y, 520, 900);
+    const car = {
+      x: spot.x, y: spot.y, angle: 0, speed: 0,
+      color: 'police', type: 'police', health: 100, driver: true,
+    };
+    G.cars.push(car);
+    G.police.push(car);
+  }
+  // despawn when clean
+  if (G.wanted === 0 && G.police.length > 0) {
+    for (const c of G.police) G.cars.splice(G.cars.indexOf(c), 1);
+    G.police.length = 0;
   }
 
-  const wantedCount = wantedCruisers(police.wanted);
-  police.spawnTimer -= dt;
-  if (police.cars.length < wantedCount && police.spawnTimer <= 0) {
-    spawnCruiser(police, rng, player);
-    police.spawnTimer = 1.2;
-  }
-
-  const px = player.onFoot ? player.x : player.car.x;
-  const py = player.onFoot ? player.y : player.car.y;
-
-  for (let i = police.cars.length - 1; i >= 0; i -= 1) {
-    const car = police.cars[i];
-    car.ramTimer -= dt;
-    car.lightPhase += dt * 9;
-    car.routeTimer -= dt;
-    const distToPlayer = Math.hypot(px - car.x, py - car.y);
-
-    if (police.wanted === 0) {
-      // Heat's gone: drive to the nearest edge of the map and leave.
-      if (car.routeTimer <= 0 || car.route.length === 0) {
-        const edge = { x: car.x < 1280 ? -80 : 2640, y: car.y };
-        car.route = routeTo(car.x, car.y, edge.x, edge.y);
-        car.routeTimer = 2;
-      }
-      if (distToPlayer > 980) {
-        police.cars.splice(i, 1);
-        continue;
-      }
-    } else if (car.routeTimer <= 0 || car.route.length === 0) {
-      // Re-route to the player twice a second; close in, aim straight at them.
-      car.route = distToPlayer < 320 ? [] : routeTo(car.x, car.y, px, py);
-      car.routeTimer = 0.5;
-    }
-
-    const target = car.route.length > 0 ? car.route[0] : { x: px, y: py };
-    if (car.route.length > 0 && Math.hypot(target.x - car.x, target.y - car.y) < 60) {
-      car.route.shift();
-    }
-    const dx = target.x - car.x;
-    const dy = target.y - car.y;
-    const wantAngle = Math.atan2(dy, dx);
-    let diff = wantAngle - car.angle;
+  // chase
+  let touchingFoot = false;
+  let boxing = 0;
+  for (const c of G.police) {
+    const dx = p.x - c.x, dy = p.y - c.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const target = Math.atan2(dy, dx);
+    let diff = target - c.angle;
     while (diff > Math.PI) diff -= Math.PI * 2;
     while (diff < -Math.PI) diff += Math.PI * 2;
-    const steer = Math.abs(diff) < 0.12 ? 0 : Math.sign(diff);
-    const maxSpeed = POLICE.chaseSpeed + POLICE.chasePerStar * police.wanted;
-    const input = {
-      up: Math.abs(diff) < 2.3,
-      down: Math.abs(diff) > 2.8,
-      left: steer < 0,
-      right: steer > 0,
-    };
-    stepCar(car, input, dt, city);
-    if (Math.abs(car.speed) > maxSpeed) {
-      const s = maxSpeed / Math.abs(car.speed);
-      car.vx *= s;
-      car.vy *= s;
-      car.speed = Math.sign(car.speed) * maxSpeed;
-    }
-
-    // A ram: a cruiser touching the player's car damages it; touching the player on foot
-    // ends the run with a bust.
-    if (distToPlayer < 36 && car.ramTimer <= 0) {
-      car.ramTimer = POLICE.ramCooldown;
-      if (player.onFoot) {
-        events.push({ type: 'busted' });
-      } else {
-        events.push({ type: 'rammed', damage: POLICE.ramDamage });
-        // Shove the player's car so the hit is felt, not just counted.
-        player.car.vx += ((player.car.x - car.x) / Math.max(1, distToPlayer)) * 260;
-        player.car.vy += ((player.car.y - car.y) / Math.max(1, distToPlayer)) * 260;
-        car.vx *= 0.4;
-        car.vy *= 0.4;
+    c.angle += Math.max(-2.8 * dt, Math.min(2.8 * dt, diff));
+    const wantSpeed = d > 260 ? 545 : 470;
+    c.speed += (wantSpeed - c.speed) * Math.min(1, dt * 1.5);
+    c.x += Math.cos(c.angle) * c.speed * dt;
+    c.y += Math.sin(c.angle) * c.speed * dt;
+    collideBuildings(G.city, c, 16);
+    // ram the player's car
+    if (!p.onFoot && p.car) {
+      const cd = Math.hypot(c.x - p.car.x, c.y - p.car.y);
+      if (cd < 36) {
+        p.car.health -= 9 * dt;
+        p.car.speed *= (1 - 0.6 * dt);
+        c.speed *= 0.92;
+        if (Math.abs(c.speed) > 200) G.audio.thud();
+        if (p.car.health <= 0) {
+          G.cars.splice(G.cars.indexOf(p.car), 1);
+          p.car = null; p.onFoot = true; p.speed = 0;
+          G.mission = null;
+          gameOver(G, 'wasted');
+          return;
+        }
       }
+      if (cd < 70 && Math.abs(p.car.speed) < 30) boxing++;
+    } else if (p.onFoot) {
+      if (d < 30) touchingFoot = true;
     }
   }
+  // busted: cop touches player on foot ~1.2s cumulative
+  if (touchingFoot) {
+    G.bustedHold = (G.bustedHold || 0) + dt;
+    if (G.bustedHold >= 1.2) { gameOver(G, 'busted'); return; }
+  } else G.bustedHold = Math.max(0, (G.bustedHold || 0) - dt * 2);
+  // busted: boxed in at low speed for 3s
+  if (!p.onFoot && boxing >= 2) {
+    G.boxedT = (G.boxedT || 0) + dt;
+    if (G.boxedT >= 3) { gameOver(G, 'busted'); return; }
+  } else G.boxedT = 0;
+}
+
+export function drawPolice(ctx, G, t) {
+  // light glow above police cars is drawn with the car itself in player.js
+  void ctx; void G; void t;
 }
